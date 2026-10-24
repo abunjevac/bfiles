@@ -1,0 +1,90 @@
+# bfiles keymap. Each action takes a list of key sequences; a sequence is
+# space-separated keys ("space n d"). The first key of a multi-key sequence is a
+# prefix that opens the which-key popup. Restore defaults with: bfiles keymap --write
+
+# navigation
+cursor_up = ["k", "up"]
+cursor_down = ["j", "down"]
+page_up = ["pgup", "ctrl+b"]
+page_down = ["pgdown", "ctrl+f"]
+top = ["g g", "home"]
+bottom = ["G", "end"]
+parent = ["h", "left", "backspace"]
+enter = ["l", "right", "enter"]
+switch_panel = ["tab"]
+back = ["H", "alt+left"]
+forward = ["L", "alt+right"]
+home_dir = ["~", "space g h"]
+goto_path = ["ctrl+g", "space g p"]
+bookmarks = ["'", "space g b"]
+same_location = ["=", "space g o"]
+swap_panels = ["space g w"]
+reload = ["ctrl+r", "space g r"]
+
+# selection
+toggle_select = ["v", "insert"]
+select_up = ["shift+up", "K"]
+select_down = ["shift+down", "J"]
+select_all = ["ctrl+a"]
+invert_selection = ["*"]
+select_pattern = ["+"]
+unselect_pattern = ["-"]
+clear_selection = ["esc"]
+
+# files
+copy = ["space c", "f5"]
+move = ["space m", "f6"]
+rename = ["space r", "shift+f6"]
+mkdir = ["space n d", "f7"]
+new_file = ["space n f", "shift+f4"]
+delete = ["space d", "f8", "delete"]
+edit = ["e", "space e", "f4"]
+open = ["o", "space o"]
+chmod = ["space p"]
+copy_path = ["y", "space y"]
+dir_size = ["space s", "ctrl+space"]
+dir_size_all = ["space S"]
+search = ["space f", "alt+f7"]
+info = ["i", "space i"]
+
+# archives
+pack = ["space a p"]
+extract = ["space a x"]
+
+# view
+filter = ["/"]
+toggle_hidden = [".", "space v h"]
+toggle_special = [",", "space v s"]
+toggle_mtime = ["space v m"]
+toggle_bytes = ["space v b"]
+sort_name = ["space v n"]
+sort_size = ["space v z"]
+sort_mtime = ["space v t"]
+sort_ext = ["space v x"]
+sort_reverse = ["space v r"]
+quick_view = ["p", "space v p"]
+view = ["space v v", "f3"]
+
+# remote and external apps
+connect = ["ctrl+k", "space g s"]
+disconnect = ["ctrl+w", "space g d"]
+terminal = ["ctrl+t", "space t"]
+explorer = ["ctrl+e", "space x"]
+
+# app
+queue = ["space q", "f2"]
+help = ["?", "f1"]
+theme = ["space , t"]
+settings = ["space , c", "f9"]
+edit_config = ["space , e"]
+quit = ["ctrl+q", "f10"]
+
+# Labels shown by which-key for prefixes.
+[groups]
+"space" = "leader"
+"g" = "+go"
+"space n" = "+new"
+"space a" = "+archive"
+"space g" = "+go to"
+"space v" = "+view"
+"space ," = "+settings"

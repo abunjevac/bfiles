@@ -1,0 +1,31 @@
+# gruvbox-dark
+dark = true
+
+bg = "#282828"
+fg = "#ebdbb2"
+muted = "#928374"
+accent = "#83a598"
+accent_fg = "#282828"
+cursor_bg = "#3c3836"
+selected = "#fabd2f"
+border = "#504945"
+
+dir = "#83a598"
+symlink = "#8ec07c"
+exec = "#b8bb26"
+archive = "#fe8019"
+image = "#d3869b"
+code = "#b8bb26"
+doc = "#ebdbb2"
+
+error = "#fb4934"
+warning = "#fabd2f"
+success = "#b8bb26"
+
+header_active_bg = "#83a598"
+header_active_fg = "#282828"
+header_inactive_bg = "#3c3836"
+header_inactive_fg = "#a89984"
+status_bg = "#1d2021"
+status_fg = "#d5c4a1"
+overlay_bg = "#1d2021"

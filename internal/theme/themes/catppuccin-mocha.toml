@@ -1,0 +1,31 @@
+# catppuccin-mocha
+dark = true
+
+bg = "#1e1e2e"
+fg = "#cdd6f4"
+muted = "#6c7086"
+accent = "#89b4fa"
+accent_fg = "#1e1e2e"
+cursor_bg = "#313244"
+selected = "#f9e2af"
+border = "#45475a"
+
+dir = "#89b4fa"
+symlink = "#89dceb"
+exec = "#a6e3a1"
+archive = "#fab387"
+image = "#f5c2e7"
+code = "#a6e3a1"
+doc = "#cdd6f4"
+
+error = "#f38ba8"
+warning = "#f9e2af"
+success = "#a6e3a1"
+
+header_active_bg = "#89b4fa"
+header_active_fg = "#1e1e2e"
+header_inactive_bg = "#313244"
+header_inactive_fg = "#7f849c"
+status_bg = "#181825"
+status_fg = "#bac2de"
+overlay_bg = "#181825"

@@ -1,0 +1,31 @@
+# terminal — follows the terminal's own palette and default colours
+dark = true
+
+bg = "default"
+fg = "default"
+muted = "8"
+accent = "4"
+accent_fg = "0"
+cursor_bg = "236"
+selected = "3"
+border = "8"
+
+dir = "4"
+symlink = "6"
+exec = "2"
+archive = "1"
+image = "5"
+code = "2"
+doc = "7"
+
+error = "1"
+warning = "3"
+success = "2"
+
+header_active_bg = "4"
+header_active_fg = "0"
+header_inactive_bg = "236"
+header_inactive_fg = "8"
+status_bg = "235"
+status_fg = "7"
+overlay_bg = "235"

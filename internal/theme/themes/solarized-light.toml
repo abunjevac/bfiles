@@ -1,0 +1,31 @@
+# solarized-light
+dark = false
+
+bg = "#fdf6e3"
+fg = "#586e75"
+muted = "#93a1a1"
+accent = "#268bd2"
+accent_fg = "#fdf6e3"
+cursor_bg = "#eee8d5"
+selected = "#b58900"
+border = "#e4ddc8"
+
+dir = "#268bd2"
+symlink = "#2aa198"
+exec = "#859900"
+archive = "#cb4b16"
+image = "#d33682"
+code = "#859900"
+doc = "#586e75"
+
+error = "#dc322f"
+warning = "#b58900"
+success = "#859900"
+
+header_active_bg = "#268bd2"
+header_active_fg = "#fdf6e3"
+header_inactive_bg = "#eee8d5"
+header_inactive_fg = "#93a1a1"
+status_bg = "#eee8d5"
+status_fg = "#657b83"
+overlay_bg = "#eee8d5"

@@ -1,0 +1,31 @@
+# ayu-dark
+dark = true
+
+bg = "#0b0e14"
+fg = "#bfbdb6"
+muted = "#565b66"
+accent = "#e6b450"
+accent_fg = "#0b0e14"
+cursor_bg = "#1b2733"
+selected = "#ffb454"
+border = "#1f2430"
+
+dir = "#59c2ff"
+symlink = "#95e6cb"
+exec = "#aad94c"
+archive = "#ff8f40"
+image = "#d2a6ff"
+code = "#aad94c"
+doc = "#bfbdb6"
+
+error = "#f07178"
+warning = "#ffb454"
+success = "#aad94c"
+
+header_active_bg = "#e6b450"
+header_active_fg = "#0b0e14"
+header_inactive_bg = "#1f2430"
+header_inactive_fg = "#565b66"
+status_bg = "#0f131a"
+status_fg = "#bfbdb6"
+overlay_bg = "#0f131a"

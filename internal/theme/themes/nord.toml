@@ -1,0 +1,31 @@
+# nord
+dark = true
+
+bg = "#2e3440"
+fg = "#d8dee9"
+muted = "#616e88"
+accent = "#88c0d0"
+accent_fg = "#2e3440"
+cursor_bg = "#3b4252"
+selected = "#ebcb8b"
+border = "#434c5e"
+
+dir = "#81a1c1"
+symlink = "#8fbcbb"
+exec = "#a3be8c"
+archive = "#d08770"
+image = "#b48ead"
+code = "#a3be8c"
+doc = "#e5e9f0"
+
+error = "#bf616a"
+warning = "#ebcb8b"
+success = "#a3be8c"
+
+header_active_bg = "#88c0d0"
+header_active_fg = "#2e3440"
+header_inactive_bg = "#3b4252"
+header_inactive_fg = "#7b88a1"
+status_bg = "#3b4252"
+status_fg = "#d8dee9"
+overlay_bg = "#272c36"

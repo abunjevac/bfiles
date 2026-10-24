@@ -1,0 +1,31 @@
+# catppuccin-latte
+dark = false
+
+bg = "#eff1f5"
+fg = "#4c4f69"
+muted = "#8c8fa1"
+accent = "#1e66f5"
+accent_fg = "#eff1f5"
+cursor_bg = "#ccd0da"
+selected = "#df8e1d"
+border = "#bcc0cc"
+
+dir = "#1e66f5"
+symlink = "#04a5e5"
+exec = "#40a02b"
+archive = "#fe640b"
+image = "#ea76cb"
+code = "#40a02b"
+doc = "#4c4f69"
+
+error = "#d20f39"
+warning = "#df8e1d"
+success = "#40a02b"
+
+header_active_bg = "#1e66f5"
+header_active_fg = "#eff1f5"
+header_inactive_bg = "#ccd0da"
+header_inactive_fg = "#6c6f85"
+status_bg = "#e6e9ef"
+status_fg = "#5c5f77"
+overlay_bg = "#e6e9ef"

@@ -1,0 +1,31 @@
+# dracula
+dark = true
+
+bg = "#282a36"
+fg = "#f8f8f2"
+muted = "#6272a4"
+accent = "#bd93f9"
+accent_fg = "#282a36"
+cursor_bg = "#44475a"
+selected = "#f1fa8c"
+border = "#44475a"
+
+dir = "#bd93f9"
+symlink = "#8be9fd"
+exec = "#50fa7b"
+archive = "#ffb86c"
+image = "#ff79c6"
+code = "#50fa7b"
+doc = "#f8f8f2"
+
+error = "#ff5555"
+warning = "#f1fa8c"
+success = "#50fa7b"
+
+header_active_bg = "#bd93f9"
+header_active_fg = "#282a36"
+header_inactive_bg = "#343746"
+header_inactive_fg = "#6272a4"
+status_bg = "#21222c"
+status_fg = "#f8f8f2"
+overlay_bg = "#21222c"

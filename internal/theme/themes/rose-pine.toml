@@ -1,0 +1,31 @@
+# rose-pine
+dark = true
+
+bg = "#191724"
+fg = "#e0def4"
+muted = "#6e6a86"
+accent = "#c4a7e7"
+accent_fg = "#191724"
+cursor_bg = "#26233a"
+selected = "#f6c177"
+border = "#403d52"
+
+dir = "#9ccfd8"
+symlink = "#31748f"
+exec = "#ebbcba"
+archive = "#f6c177"
+image = "#c4a7e7"
+code = "#ebbcba"
+doc = "#e0def4"
+
+error = "#eb6f92"
+warning = "#f6c177"
+success = "#9ccfd8"
+
+header_active_bg = "#c4a7e7"
+header_active_fg = "#191724"
+header_inactive_bg = "#26233a"
+header_inactive_fg = "#908caa"
+status_bg = "#1f1d2e"
+status_fg = "#e0def4"
+overlay_bg = "#1f1d2e"

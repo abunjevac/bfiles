@@ -1,0 +1,50 @@
+version: "2"
+run:
+  tests: true
+linters:
+  default: all
+  enable:
+    - gomodguard_v2
+  disable:
+    - wrapcheck
+    - exhaustruct_v5
+    - gomodguard
+    - err113
+    - tagliatelle
+    - mnd
+    - dupl
+    - revive
+    - wsl
+    - noinlineerr
+    - depguard
+    - exhaustruct
+    - ireturn
+    - lll
+    - musttag
+    - perfsprint
+    - tagalign
+    - varnamelen
+    - testpackage
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    interfacebloat:
+      max: 15
+    govet:
+      disable:
+        - fieldalignment
+      enable-all: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax

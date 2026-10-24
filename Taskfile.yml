@@ -1,0 +1,68 @@
+version: "3"
+
+vars:
+  VERSION:
+    sh: git describe --tags --abbrev=0 2>/dev/null || echo "dev"
+
+tasks:
+  build:
+    desc: Build bfiles binary
+    cmds:
+      - go build -trimpath -ldflags "-s -w -X github.com/abunjevac/bfiles/internal/version.Version={{.VERSION}}" -o bfiles ./cmd/bfiles
+
+  pack:
+    desc: Package bfiles binary with upx
+    cmds:
+      - upx -6 -q bfiles
+
+  run:
+    desc: Build and run bfiles
+    cmds:
+      - task: build
+      - ./bfiles {{.CLI_ARGS}}
+
+  lint:
+    desc: Run golangci-lint and go vet
+    cmds:
+      - golangci-lint run --allow-parallel-runners --timeout 5m
+      - go vet ./...
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -count=1 ./...
+
+  race:
+    desc: Run tests with the race detector
+    cmds:
+      - go test -count=1 -race ./...
+
+  scan:
+    desc: Run osv-scanner for dependency vulnerabilities
+    cmds:
+      - osv-scanner -r .
+
+  check:
+    desc: Full quality gate — lint + test + scan
+    cmds:
+      - task: lint
+      - task: test
+      - task: scan
+
+  install:
+    desc: Build bfiles and install to ~/.local/bin
+    cmds:
+      - task: build
+      - mkdir -p ~/.local/bin
+      - mv bfiles ~/.local/bin/bfiles
+
+  tidy:
+    desc: Tidy Go modules
+    cmds:
+      - go mod tidy
+
+  hooks:
+    desc: Install lefthook git hooks (installs lefthook)
+    cmds:
+      - go install github.com/evilmartians/lefthook@v1.12.0
+      - lefthook install

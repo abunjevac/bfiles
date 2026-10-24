@@ -1,0 +1,72 @@
+# bfiles configuration. Changes are picked up live while bfiles is running.
+
+# Theme name: a builtin or a file in themes/ (without .toml).
+theme = "tokyonight"
+
+# Icon style: "nerd" (needs a Nerd Font), "unicode" or "none".
+icons = "nerd"
+
+# Editor command. Empty = $VISUAL, then $EDITOR, then vi. {file} is the file to edit.
+editor = []
+
+# Opener for files that cannot be previewed.
+opener = ["xdg-open", "{file}"]
+
+# Terminal launched in the current directory.
+terminal = ["bterm", "-w", "{cwd}"]
+
+# Terminal that runs a command (used for SSH panels). {cmd} expands to the command argv.
+terminal_exec = ["bterm", "-w", "{cwd}", "-e", "{cmd}"]
+
+# File explorer launched at the current location. {url} is a local path or sftp:// URL.
+explorer = ["dolphin", "{url}"]
+
+# Ask before deleting.
+confirm_delete = true
+
+# Move local files to the freedesktop trash instead of deleting them.
+use_trash = false
+
+# How many queued jobs may run at once (adjustable live in the queue window).
+parallel_jobs = 1
+
+# Delay before the which-key popup appears after a prefix key, in milliseconds.
+which_key_delay_ms = 250
+
+# Directory size mode: "apparent" (sum of file sizes) or "disk" (allocated blocks).
+dir_size = "apparent"
+
+[panels]
+show_hidden = false
+show_special = false
+show_mtime = true
+# Sort: "name", "size", "mtime" or "ext".
+sort = "name"
+# Directories hidden unless special dirs are shown, even when dotfiles are visible.
+special_dirs = [
+  ".git", "node_modules", ".idea", ".vscode", "__pycache__", ".venv",
+  ".cache", ".task", ".superpowers", "target", "dist", "vendor",
+]
+
+[bookmarks]
+# name = "/path"
+
+[preview]
+# Files larger than this are previewed partially; units K, M, G are allowed.
+max_bytes = "1M"
+
+# External previewers, first match wins. Placeholders: {file}, {width}, {height}.
+# A missing command falls back to the builtin preview.
+[[preview.rule]]
+match = ["*.md", "*.markdown"]
+command = ["glow", "-s", "dark", "-w", "{width}", "{file}"]
+
+[[preview.rule]]
+match = ["*.pdf"]
+command = ["pdftotext", "-layout", "-l", "5", "{file}", "-"]
+
+[ssh]
+# Number of entries kept in the connection history.
+history_limit = 50
+# Keep-alive interval in seconds (0 disables).
+keepalive_sec = 30

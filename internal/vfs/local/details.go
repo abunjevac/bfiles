@@ -30,7 +30,7 @@ func (*FS) Details(_ context.Context, p string) (vfs.Details, error) {
 		Owner:  userName(st.Uid),
 		Group:  groupName(st.Gid),
 		Inode:  st.Ino,
-		Links:  st.Nlink,
+		Links:  uint64(st.Nlink), //nolint:unconvert // uint32 on arm64, uint64 on amd64
 		Access: time.Unix(st.Atim.Unix()),
 		Change: time.Unix(st.Ctim.Unix()),
 	}, nil

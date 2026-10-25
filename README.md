@@ -94,11 +94,11 @@ you assign is taken away from the action that had it by default.
 | `Tab`                      | Switch panel                             |
 | `H` / `L`                  | History back / forward                   |
 | `~`                        | Home directory                           |
-| `Ctrl+G`                   | Go to a path or `ssh://` target          |
+| `Ctrl+G`                   | Go to a path or `ssh://` target; local paths complete from a list (`Tab`, `↑↓`), and the current location starts selected so typing replaces it |
 | `'`                        | Bookmarks                                |
 | `=`                        | Show this location in the other panel    |
 | `/`                        | Quick filter                             |
-| `Ctrl+R`                   | Reload                                   |
+| `Ctrl+R`                   | Reload (the header shows when the listing was read) |
 
 ### Selection
 
@@ -217,7 +217,7 @@ and pick it in the theme picker. The `terminal` theme follows your terminal's pa
 ### SSH
 
 Hosts come from `~/.ssh/config` (`HostName`, `User`, `Port`, `IdentityFile` and a single-hop `ProxyJump`) and from
-the connection history. Authentication tries ssh-agent, then your keys (asking for passphrases), then
+the connection history. `Include` is followed; `Match` blocks other than `Match all` and `Match host` are ignored. Authentication tries ssh-agent, then your keys (asking for passphrases), then
 keyboard-interactive and password prompts. Passwords are never stored. Unknown host keys are shown with their
 fingerprint and added to `~/.ssh/known_hosts` once accepted; a changed host key is refused. A connection stays open
 while a panel shows it or a job uses it; `Ctrl+W` takes the panel back to the local directory it showed before.
@@ -230,6 +230,9 @@ the terminal stays open and shows the exit status.
 zip, tar, and tar compressed with gz, bz2, xz or zst can be read and written. Changes are collected while a job runs
 and written once at the end: the new archive goes to a temporary file next to the original and replaces it only when
 complete. 7z and rar are read-only. Archives inside archives and archives on SSH remotes work the same way.
+
+Archives that cannot be rewritten without losing something — duplicate member names (from `tar -r`), conflicting
+entries, or tar hard links — open read-only, with a note saying why.
 
 ---
 

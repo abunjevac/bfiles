@@ -1,7 +1,6 @@
 package sshcfg
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/user"
@@ -15,8 +14,14 @@ import (
 )
 
 // Config is a parsed ssh_config file. The zero value behaves like an empty file.
+//
+// Include directives are followed (relative paths resolve against the including
+// file's directory) and host matching is case-insensitive. Match blocks are honoured
+// only for "Match all" and "Match host <patterns>"; blocks with any other criteria
+// (exec, user, canonical, ...) cannot be evaluated here and are ignored entirely.
 type Config struct {
-	cfg *ssh_config.Config
+	cfg     *ssh_config.Config
+	aliases []string
 }
 
 // Load reads an ssh_config file; a missing file yields an empty Config.
@@ -30,12 +35,18 @@ func Load(path string) (*Config, error) {
 		return &Config{}, fmt.Errorf("read-ssh-config: %w", err)
 	}
 
-	cfg, err := ssh_config.Decode(bytes.NewReader(data))
+	var p preprocessor
+
+	if err = p.file(path, data, 0); err != nil {
+		return &Config{}, fmt.Errorf("read-ssh-config: %w", err)
+	}
+
+	cfg, err := ssh_config.DecodeBytes(p.out.Bytes())
 	if err != nil {
 		return &Config{}, fmt.Errorf("parse-ssh-config: %w", err)
 	}
 
-	return &Config{cfg: cfg}, nil
+	return &Config{cfg: cfg, aliases: p.aliases}, nil
 }
 
 // DefaultPath returns ~/.ssh/config.
@@ -45,28 +56,10 @@ func DefaultPath() string {
 	return filepath.Join(home, ".ssh", "config")
 }
 
-// Aliases returns the concrete host aliases defined in the file, in file order,
-// skipping wildcard and negated patterns.
+// Aliases returns the concrete host aliases defined in the file and the files it
+// includes, lower-cased, in file order, skipping wildcard and negated patterns.
 func (c *Config) Aliases() []string {
-	if c.cfg == nil {
-		return nil
-	}
-
-	var out []string
-
-	for _, h := range c.cfg.Hosts {
-		for _, p := range h.Patterns {
-			s := p.String()
-
-			if strings.ContainsAny(s, "*?!") || slices.Contains(out, s) {
-				continue
-			}
-
-			out = append(out, s)
-		}
-	}
-
-	return out
+	return slices.Clone(c.aliases)
 }
 
 // Target is a fully resolved SSH destination.
@@ -103,7 +96,7 @@ func (c *Config) Resolve(userName, host string, port int) Target {
 	t.Port = c.resolvePort(host, t.Port)
 
 	for _, f := range c.getAll(host, "IdentityFile") {
-		t.IdentityFiles = append(t.IdentityFiles, expandTilde(f))
+		t.IdentityFiles = append(t.IdentityFiles, expandTokens(expandTilde(f), t))
 	}
 
 	if pj := c.get(host, "ProxyJump"); pj != "" && !strings.EqualFold(pj, "none") {
@@ -149,7 +142,7 @@ func (c *Config) get(alias, key string) string {
 		return ""
 	}
 
-	v, _ := c.cfg.Get(alias, key)
+	v, _ := c.cfg.Get(strings.ToLower(alias), key)
 
 	return v
 }
@@ -159,7 +152,7 @@ func (c *Config) getAll(alias, key string) []string {
 		return nil
 	}
 
-	v, _ := c.cfg.GetAll(alias, key)
+	v, _ := c.cfg.GetAll(strings.ToLower(alias), key)
 
 	return v
 }
@@ -175,6 +168,65 @@ func expandTilde(p string) string {
 	}
 
 	return filepath.Join(home, p[2:])
+}
+
+// expandTokens replaces the ssh_config percent tokens that make sense for an
+// IdentityFile: %% %d (local home) %h (host name) %n (alias) %p (port) %r (remote
+// user) %u (local user). Unknown tokens are kept as written.
+func expandTokens(s string, t Target) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+
+	var sb strings.Builder
+
+	for i := 0; i < len(s); i++ {
+		if s[i] != '%' || i+1 == len(s) {
+			sb.WriteByte(s[i])
+
+			continue
+		}
+
+		if v, ok := tokenValue(s[i+1], t); ok {
+			sb.WriteString(v)
+
+			i++
+
+			continue
+		}
+
+		sb.WriteByte(s[i])
+	}
+
+	return sb.String()
+}
+
+func tokenValue(c byte, t Target) (string, bool) {
+	switch c {
+	case '%':
+		return "%", true
+	case 'd':
+		home, err := os.UserHomeDir()
+
+		return home, err == nil
+	case 'h':
+		return t.Host, true
+	case 'n':
+		return t.Alias, true
+	case 'p':
+		return strconv.Itoa(t.Port), true
+	case 'r':
+		return t.User, true
+	case 'u':
+		u, err := user.Current()
+		if err != nil {
+			return "", false
+		}
+
+		return u.Username, true
+	default:
+		return "", false
+	}
 }
 
 // Candidate is one row of the connect dialog.
@@ -232,5 +284,5 @@ func hostOf(text string) string {
 
 	h, _, _ := strings.Cut(text, ":")
 
-	return h
+	return strings.ToLower(h)
 }

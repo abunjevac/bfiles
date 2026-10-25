@@ -23,9 +23,23 @@ const labelSize = "Size"
 
 // infoLoadedMsg delivers the slow parts of the info dialog.
 type infoLoadedMsg struct {
+	dialog  *infoDialog
 	details vfs.Details
 	kind    string
 	held    []vfs.FS
+}
+
+// effect releases the held filesystem whatever happened to the dialog meanwhile, and
+// fills the dialog only if it is still open.
+func (msg infoLoadedMsg) effect(m *Model) {
+	for _, f := range msg.held {
+		m.release(f)
+	}
+
+	if m.isOpen(msg.dialog) {
+		msg.dialog.details = &msg.details
+		msg.dialog.kind = msg.kind
+	}
 }
 
 // infoDialog shows everything known about one entry.
@@ -62,7 +76,7 @@ func (m *Model) infoDialog() tea.Cmd {
 	ctx := m.ctx
 
 	cmds = append(cmds, func() tea.Msg {
-		msg := infoLoadedMsg{kind: describeKind(ctx, f, e), held: held}
+		msg := infoLoadedMsg{dialog: d, kind: describeKind(ctx, f, e), held: held}
 
 		if dt, ok := f.(vfs.Detailer); ok {
 			msg.details, _ = dt.Details(ctx, e.Path)
@@ -124,17 +138,6 @@ func fileCommand(ctx context.Context, p string) string {
 func (d *infoDialog) place() placement { return placeCenter }
 
 func (d *infoDialog) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
-	if loaded, ok := msg.(infoLoadedMsg); ok {
-		for _, f := range loaded.held {
-			m.release(f)
-		}
-
-		d.details = &loaded.details
-		d.kind = loaded.kind
-
-		return false, nil
-	}
-
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return false, nil

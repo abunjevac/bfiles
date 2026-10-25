@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,11 @@ func (m *Model) pop() {
 	if n := len(m.overlays); n > 0 {
 		m.overlays = m.overlays[:n-1]
 	}
+}
+
+// isOpen reports whether o is still on the overlay stack.
+func (m *Model) isOpen(o overlay) bool {
+	return slices.Contains(m.overlays, o)
 }
 
 func (m *Model) top() overlay {

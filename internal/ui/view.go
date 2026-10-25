@@ -198,6 +198,10 @@ func (m *Model) renderHeader(p *Panel, w int, active bool) string {
 
 	badges := panelBadges(p)
 
+	if !p.listedAt.IsZero() {
+		badges = append(badges, listedTime(p.listedAt, timeNow()))
+	}
+
 	if hint := m.closeHint(p); hint != "" {
 		badges = append(badges, hint)
 	}
@@ -212,6 +216,16 @@ func (m *Model) renderHeader(p *Panel, w int, active bool) string {
 	locW := w - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
 
 	return st.Render(left + fitLeft(m.locationText(p), locW) + " " + right)
+}
+
+// listedTime shows when a listing was read: the time of day, with the date when it
+// is not from today.
+func listedTime(t, now time.Time) string {
+	if t.YearDay() == now.YearDay() && t.Year() == now.Year() {
+		return t.Format("15:04:05")
+	}
+
+	return t.Format("Jan _2 15:04")
 }
 
 // closeHint tells how to leave a remote, archive or search panel.
@@ -282,11 +296,12 @@ func (m *Model) renderPanel(i, w, h int) []string {
 	rows = append(rows, m.renderHeader(p, w, i == m.active))
 
 	listH := h - 1
-	p.rows = listH
 
 	if p.filtering {
 		listH--
 	}
+
+	p.rows = listH
 
 	p.clamp()
 
@@ -515,7 +530,7 @@ func (m *Model) modeLabel() string {
 func (m *Model) statusInfo(p *Panel) string {
 	st := m.st
 
-	if n := len(p.selected); n > 0 {
+	if n := p.selectedVisible(); n > 0 {
 		total := m.selectionSize(p)
 
 		return st.selected.Background(st.status.GetBackground()).Render(fmt.Sprintf(" %d selected · %s ", n, humanSize(total)))

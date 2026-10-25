@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/abunjevac/bfiles/internal/config"
 )
 
 func fixture(t *testing.T) string {
@@ -563,4 +566,117 @@ func TestExactSizesToggle(t *testing.T) {
 	require.True(t, h.m.panel().exactSizes)
 	require.Contains(t, h.screen(), "1 234 567")
 	require.False(t, h.m.other().exactSizes, "toggle is per panel")
+}
+
+func TestHelpSeparatesAlternativeKeys(t *testing.T) {
+	t.Parallel()
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+
+	h.keys("?")
+
+	d, ok := h.m.top().(*listDialog)
+	require.True(t, ok)
+
+	for _, it := range d.items {
+		if it.value == "copy" {
+			require.Equal(t, "␣ c · F5", it.hint)
+
+			return
+		}
+	}
+
+	t.Fatal("copy not listed in help")
+}
+
+func TestGotoCompletion(t *testing.T) {
+	t.Parallel()
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+
+	h.keys("ctrl+g")
+
+	d, ok := h.m.top().(*gotoDialog)
+	require.True(t, ok)
+	require.True(t, d.input.selected, "current location starts selected")
+
+	// typing replaces the selected location
+	h.typeText(dir + "/z")
+	h.waitFor(func() bool { return len(d.shown) > 0 }, "suggestions")
+	require.Equal(t, "zeta", d.shown[0].name)
+
+	h.keys("tab")
+	require.Equal(t, dir+"/zeta/", d.input.String())
+	h.waitFor(func() bool { return len(d.shown) == 1 && d.shown[0].name == "deep" }, "zeta listed")
+
+	h.keys("down", "enter")
+	h.waitFor(func() bool { return h.m.panel().dir == filepath.Join(dir, "zeta", "deep") }, "navigated")
+}
+
+func TestSwapPanelsKeepsInFlightListing(t *testing.T) {
+	t.Parallel()
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+
+	// start a listing in the left panel, then swap before it is applied
+	cmd := h.m.navigate(0, h.m.local, filepath.Join(dir, "docs"), "", true)
+	left := h.m.panels[0]
+
+	h.keys("space", "g", "w")
+	h.run(cmd)
+	h.settle()
+
+	require.Same(t, left, h.m.panels[1])
+	require.Equal(t, filepath.Join(dir, "docs"), left.dir, "the listing follows its panel")
+	require.Equal(t, dir, h.m.panels[0].dir)
+	require.False(t, left.loading)
+}
+
+func TestHeaderShowsListingTime(t *testing.T) {
+	t.Parallel()
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+	p := h.m.panel()
+
+	require.False(t, p.listedAt.IsZero())
+	require.Contains(t, h.screen(), p.listedAt.Format("15:04:05"))
+
+	before := p.listedAt
+
+	time.Sleep(10 * time.Millisecond)
+	h.keys("ctrl+r")
+	require.True(t, p.listedAt.After(before), "refresh updates the time")
+}
+
+func TestFilteredSelectionSurvives(t *testing.T) {
+	t.Parallel()
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+	p := h.m.panel()
+
+	p.selectName("alpha.txt")
+	h.keys("v")
+	h.keys("/")
+	h.typeText("beta")
+	require.Equal(t, "beta.go", p.targets()[0].Name, "a selection hidden by the filter is not acted on")
+	h.keys("esc")
+
+	require.True(t, p.selected[filepath.Join(dir, "alpha.txt")], "selection comes back with the filter cleared")
+}
+
+func TestSavedPanelSettingsApplyLive(t *testing.T) {
+	t.Parallel()
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+
+	require.NoError(t, config.UpdateFile(h.m.bundle.ConfigPath(), []config.Change{{Key: "panels.show_hidden", Value: true}}))
+
+	h.run(h.m.reloadConfigCmd())
+	h.waitFor(func() bool { return h.m.panels[0].showHidden && h.m.panels[1].showHidden }, "hidden shown")
 }

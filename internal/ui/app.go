@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -93,7 +93,6 @@ type Model struct {
 	initial     [2]location.Spec
 	startupErrs []string
 
-	tempDirs     []string
 	quitAsked    bool
 	quitWhenIdle bool
 	searchSeq    int
@@ -157,6 +156,7 @@ func newModel(ctx context.Context, bundle *config.Bundle, opts Options) *Model {
 
 	for i := range m.panels {
 		m.panels[i] = newPanel(cfg)
+		m.panels[i].id = i
 		m.panels[i].showHidden = m.panels[i].showHidden || opts.Hidden
 	}
 
@@ -216,13 +216,18 @@ func (m *Model) shutdown() {
 	}
 
 	m.pool.CloseAll()
-
-	for _, d := range m.tempDirs {
-		_ = os.RemoveAll(d)
-	}
 }
 
 func (m *Model) panel() *Panel { return m.panels[m.active] }
+
+// panelIndex finds where the panel with the given id currently is.
+func (m *Model) panelIndex(id int) int {
+	if m.panels[1].id == id {
+		return 1
+	}
+
+	return 0
+}
 
 func (m *Model) other() *Panel { return m.panels[1-m.active] }
 
@@ -253,6 +258,7 @@ func (m *Model) release(f vfs.FS) {
 	}
 
 	delete(m.refs, f)
+	m.forgetFS(f)
 
 	switch t := f.(type) {
 	case *archive.FS:
@@ -262,6 +268,17 @@ func (m *Model) release(f vfs.FS) {
 		m.release(outer)
 	case *sftpfs.FS:
 		m.pool.Release(t)
+	}
+}
+
+// forgetFS drops back/forward history entries on a filesystem that is being closed,
+// so history never leads to a dead archive or connection.
+func (m *Model) forgetFS(f vfs.FS) {
+	gone := func(pl place) bool { return pl.fs == f }
+
+	for _, p := range m.panels {
+		p.back = slices.DeleteFunc(p.back, gone)
+		p.fwd = slices.DeleteFunc(p.fwd, gone)
 	}
 }
 

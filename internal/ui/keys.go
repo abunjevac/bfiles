@@ -208,7 +208,14 @@ func (m *Model) handleWheel(ms tea.Mouse) tea.Cmd {
 		return nil
 	}
 
-	p := m.panels[m.panelAt(ms.X)]
+	i := m.panelAt(ms.X)
+
+	// in quick view the other side shows a preview, not a panel
+	if m.quickView && i != m.active {
+		return nil
+	}
+
+	p := m.panels[i]
 
 	switch ms.Button { //nolint:exhaustive // only vertical wheel scrolls
 	case tea.MouseWheelUp:

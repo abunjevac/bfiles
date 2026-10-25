@@ -2,12 +2,23 @@ package ui
 
 import (
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
 
+// armDelay is how long a dialog that opened on its own (a job conflict, an SSH
+// prompt) ignores keys, so keystrokes meant for something else cannot answer it.
+const armDelay = 400 * time.Millisecond
+
+// armed reports whether a dialog opened asynchronously may take keys yet.
+func armed(since time.Time) bool {
+	return since.IsZero() || timeNow().Sub(since) >= armDelay
+}
+
 // inputDialog asks for one line of text.
 type inputDialog struct {
+	opened   time.Time // set for dialogs that open on their own; see armDelay
 	title    string
 	label    string
 	input    textInput
@@ -20,6 +31,10 @@ type inputDialog struct {
 func (d *inputDialog) place() placement { return placeCenter }
 
 func (d *inputDialog) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
+	if !armed(d.opened) {
+		return false, nil
+	}
+
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch key := k.String(); {
 		case isCancel(key) && d.onCancel != nil:
@@ -74,6 +89,7 @@ func checkbox(on bool) string {
 
 // confirmDialog offers a set of buttons. Each button's first letter is a hotkey.
 type confirmDialog struct {
+	opened   time.Time // set for dialogs that open on their own; see armDelay
 	title    string
 	lines    []string
 	buttons  []string
@@ -89,22 +105,17 @@ func (d *confirmDialog) place() placement { return placeCenter }
 
 func (d *confirmDialog) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
 	k, ok := msg.(tea.KeyPressMsg)
-	if !ok {
+	if !ok || !armed(d.opened) {
 		return false, nil
 	}
 
 	key := k.String()
 
-	switch key {
-	case keyLeft, "h", keyShiftTab:
-		d.sel = (d.sel + len(d.buttons) - 1) % len(d.buttons)
-
+	if d.moveSel(key) {
 		return false, nil
-	case keyRight, "l", keyTab:
-		d.sel = (d.sel + 1) % len(d.buttons)
+	}
 
-		return false, nil
-	case keyEnter:
+	if key == keyEnter {
 		return true, d.onChoice(m, d.sel, d.checked)
 	}
 
@@ -123,6 +134,20 @@ func (d *confirmDialog) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
 	}
 
 	return d.hotkey(m, key)
+}
+
+// moveSel moves between buttons and reports whether key was a movement key.
+func (d *confirmDialog) moveSel(key string) bool {
+	switch key {
+	case keyLeft, "h", keyShiftTab:
+		d.sel = (d.sel + len(d.buttons) - 1) % len(d.buttons)
+	case keyRight, "l", keyTab:
+		d.sel = (d.sel + 1) % len(d.buttons)
+	default:
+		return false
+	}
+
+	return true
 }
 
 // hotkey chooses the button whose first letter matches key.

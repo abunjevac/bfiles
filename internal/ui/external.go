@@ -114,7 +114,8 @@ func (m *Model) applyDownloaded(msg downloadedMsg) tea.Cmd {
 		return m.errorToast(msg.err)
 	}
 
-	m.tempDirs = append(m.tempDirs, msg.tmpDir)
+	// the copy is left in the temp dir: the opened application may keep using it after
+	// bfiles exits, and the system cleans its temp dir
 
 	return m.runOpener(msg.file)
 }
@@ -140,18 +141,18 @@ func (m *Model) edit() tea.Cmd {
 	}
 
 	if lp, ok := localPathOf(p.fs, e.Path); ok {
-		return m.startEditor(editReadyMsg{panel: m.active, fs: p.fs, path: e.Path, local: lp})
+		return m.startEditor(editReadyMsg{panel: m.panel().id, fs: p.fs, path: e.Path, local: lp})
 	}
 
 	f := p.fs
 	held := m.hold(f)
-	panel := m.active
+	id := m.panel().id
 	ctx := m.ctx
 
 	return func() tea.Msg {
 		dir, file, err := download(ctx, f, e.Path)
 
-		msg := editReadyMsg{panel: panel, fs: f, path: e.Path, local: file, tmpDir: dir, err: err, held: held}
+		msg := editReadyMsg{panel: id, fs: f, path: e.Path, local: file, tmpDir: dir, err: err, held: held}
 
 		if err == nil {
 			msg.sum, msg.err = fileSum(file)
@@ -339,5 +340,5 @@ func (m *Model) detached(argv []string, dir, what string) tea.Cmd {
 
 // editConfig opens config.toml in the editor; the watcher applies the changes.
 func (m *Model) editConfig() tea.Cmd {
-	return m.startEditor(editReadyMsg{panel: m.active, fs: m.local, path: m.bundle.ConfigPath(), local: m.bundle.ConfigPath()})
+	return m.startEditor(editReadyMsg{panel: m.panel().id, fs: m.local, path: m.bundle.ConfigPath(), local: m.bundle.ConfigPath()})
 }

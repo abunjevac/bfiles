@@ -31,10 +31,17 @@ func (msg outerRelease) apply(m *Model) tea.Cmd {
 func (msg heldOpened) apply(m *Model) tea.Cmd {
 	var cmd tea.Cmd
 
-	if msg.err != nil {
+	i := m.panelIndex(msg.panel)
+	p := m.panels[i]
+
+	switch {
+	case msg.reqID != p.reqID:
+		// the panel moved on; just drop the held reference
+	case msg.err != nil:
+		p.loading = false
 		cmd = m.errorToast(msg.err)
-	} else {
-		cmd = m.list(msg.panel, listedMsg{fs: msg.fs, dir: msg.dir, selectName: msg.selectName, history: true})
+	default:
+		cmd = m.list(i, listedMsg{fs: msg.fs, dir: msg.dir, selectName: msg.selectName, history: true})
 	}
 
 	for _, f := range msg.held {

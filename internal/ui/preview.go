@@ -99,8 +99,20 @@ func (m *Model) applyPreview(msg previewMsg) tea.Cmd {
 
 // viewerLoadedMsg delivers content to the full-screen viewer.
 type viewerLoadedMsg struct {
+	viewer *viewer
 	result preview.Result
 	held   []vfs.FS
+}
+
+// effect releases the held filesystem and loads the viewer if it is still open.
+func (msg viewerLoadedMsg) effect(m *Model) {
+	for _, f := range msg.held {
+		m.release(f)
+	}
+
+	if m.isOpen(msg.viewer) {
+		msg.viewer.load(msg)
+	}
 }
 
 // viewer shows a file full screen with scrolling and search.
@@ -137,7 +149,7 @@ func (m *Model) openViewer() tea.Cmd {
 	return func() tea.Msg {
 		defer cancel()
 
-		return viewerLoadedMsg{result: preview.Render(ctx, req), held: held}
+		return viewerLoadedMsg{viewer: v, result: preview.Render(ctx, req), held: held}
 	}
 }
 
@@ -160,12 +172,6 @@ func (v *viewer) lineCount() int {
 }
 
 func (v *viewer) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
-	if loaded, ok := msg.(viewerLoadedMsg); ok {
-		v.load(m, loaded)
-
-		return false, nil
-	}
-
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return false, nil
@@ -190,11 +196,7 @@ func (v *viewer) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
 	return false, nil
 }
 
-func (v *viewer) load(m *Model, loaded viewerLoadedMsg) {
-	for _, f := range loaded.held {
-		m.release(f)
-	}
-
+func (v *viewer) load(loaded viewerLoadedMsg) {
 	v.res = &loaded.result
 	v.plain = make([]string, len(v.res.Lines))
 
@@ -230,7 +232,7 @@ var viewerScroll = map[string]func(rows, offset, last int) int{
 	"ctrl+f":  func(r, o, _ int) int { return o + r - 1 },
 	keyPgUp:   func(r, o, _ int) int { return o - r + 1 },
 	"b":       func(r, o, _ int) int { return o - r + 1 },
-	"ctrl+b":  func(r, o, _ int) int { return o - r + 1 },
+	keyCtrlB:  func(r, o, _ int) int { return o - r + 1 },
 	keyCtrlD:  func(r, o, _ int) int { return o + r/2 },
 	"ctrl+u":  func(r, o, _ int) int { return o - r/2 },
 	"g":       func(_, _, _ int) int { return 0 },

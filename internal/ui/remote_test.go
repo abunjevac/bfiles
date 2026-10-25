@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/mholt/archives"
 	"github.com/pkg/sftp"
@@ -22,6 +23,9 @@ import (
 	"github.com/abunjevac/bfiles/internal/vfs"
 	"github.com/abunjevac/bfiles/internal/vfs/sftpfs"
 )
+
+// memberName is the file inside the test archives.
+const memberName = "x.txt"
 
 func makeZip(t *testing.T, dst string, files map[string]string) {
 	t.Helper()
@@ -190,6 +194,12 @@ func TestSSHPanelWithPrompts(t *testing.T) {
 
 	h.waitFor(func() bool { return topIs[*confirmDialog](h) }, "host key prompt")
 	require.Contains(t, h.screen(), "Unknown host")
+
+	// a key arriving right after the prompt popped up must not answer it
+	h.keys("y")
+	require.True(t, topIs[*confirmDialog](h), "early key ignored")
+
+	time.Sleep(armDelay)
 	h.keys("y")
 
 	h.waitFor(func() bool {
@@ -197,6 +207,7 @@ func TestSSHPanelWithPrompts(t *testing.T) {
 
 		return ok && d.input.mask
 	}, "password prompt")
+	time.Sleep(armDelay)
 	h.typeText("secret")
 	h.keys("enter")
 
@@ -227,7 +238,7 @@ func TestCloseLocationLeavesArchive(t *testing.T) {
 
 	dir := t.TempDir()
 
-	makeZip(t, filepath.Join(dir, "b.zip"), map[string]string{"x.txt": "x"})
+	makeZip(t, filepath.Join(dir, "b.zip"), map[string]string{memberName: "x"})
 
 	h := newHarness(t, dir, dir)
 
@@ -239,4 +250,76 @@ func TestCloseLocationLeavesArchive(t *testing.T) {
 	h.keys("ctrl+w")
 	h.waitFor(func() bool { return h.m.panel().fs.Kind() == vfs.KindLocal }, "archive closed")
 	require.Equal(t, "b.zip", h.cursorName())
+}
+
+func TestInfoClosedEarlyReleasesArchive(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	makeZip(t, filepath.Join(dir, "b.zip"), map[string]string{memberName: "x"})
+
+	h := newHarness(t, dir, dir)
+
+	h.m.panel().selectName("b.zip")
+	h.keys("enter")
+	h.waitFor(func() bool { return h.m.panel().fs.Kind() == vfs.KindArchive }, "archive opened")
+
+	h.m.panel().selectName(memberName)
+	h.update(keyMsg("i"))
+	h.update(keyMsg("esc")) // close before the details arrive
+	h.update(keyMsg("f3"))
+	h.update(keyMsg("q"))
+	h.settle()
+
+	h.keys("ctrl+w")
+	h.waitFor(func() bool { return h.m.panel().fs.Kind() == vfs.KindLocal }, "archive closed")
+	require.Empty(t, h.m.refs, "no reference may outlive the closed dialogs")
+}
+
+func TestHistoryForgetsClosedArchive(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	makeZip(t, filepath.Join(dir, "b.zip"), map[string]string{memberName: "x"})
+
+	h := newHarness(t, dir, dir)
+
+	h.m.panel().selectName("b.zip")
+	h.keys("enter")
+	h.waitFor(func() bool { return h.m.panel().fs.Kind() == vfs.KindArchive }, "archive opened")
+
+	h.keys("ctrl+w")
+	h.waitFor(func() bool { return h.m.panel().fs.Kind() == vfs.KindLocal }, "archive closed")
+
+	for _, pl := range h.m.panel().back {
+		require.NotEqual(t, vfs.KindArchive, pl.fs.Kind(), "closed archive must leave history")
+	}
+
+	h.keys("H")
+	require.Equal(t, vfs.KindLocal, h.m.panel().fs.Kind())
+}
+
+func TestStaleArchiveOpenIsDiscarded(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	makeZip(t, filepath.Join(dir, "b.zip"), map[string]string{memberName: "x"})
+	writeFiles(t, dir, map[string]string{"sub/f": "f"})
+
+	h := newHarness(t, dir, dir)
+
+	open := h.m.openArchiveCmd(0, h.m.local, filepath.Join(dir, "b.zip"), "")
+
+	// the user goes elsewhere before the archive finished opening
+	h.run(h.m.navigate(0, h.m.local, filepath.Join(dir, "sub"), "", true))
+	h.settle()
+	h.run(open)
+	h.settle()
+
+	require.Equal(t, vfs.KindLocal, h.m.panels[0].fs.Kind())
+	require.Equal(t, filepath.Join(dir, "sub"), h.m.panels[0].dir)
+	require.Empty(t, h.m.refs)
 }

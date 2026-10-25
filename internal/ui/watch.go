@@ -117,8 +117,11 @@ func (w *watcher) set(dirs []string) {
 		want[d] = true
 	}
 
+	themes := filepath.Join(w.configDir, "themes")
+
 	for d := range w.dirs {
-		if !want[d] && d != w.configDir {
+		// the config dirs stay watched even when a panel leaves them
+		if !want[d] && d != w.configDir && d != themes {
 			_ = w.w.Remove(d)
 		}
 	}

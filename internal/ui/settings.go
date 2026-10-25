@@ -264,7 +264,7 @@ func (m *Model) applyConfig(msg configReloadedMsg) tea.Cmd {
 		return m.toast(msg.errText+" — keeping the previous settings", levelError)
 	}
 
-	prevParallel := m.cfg.ParallelJobs
+	prevParallel, prevPanels := m.cfg.ParallelJobs, m.cfg.Panels
 
 	m.cfg = msg.cfg
 	m.bundle.Config = msg.cfg
@@ -284,7 +284,7 @@ func (m *Model) applyConfig(msg configReloadedMsg) tea.Cmd {
 	}
 
 	for i, p := range m.panels {
-		p.special = m.cfg.Panels.SpecialDirs
+		p.applyDefaults(prevPanels, m.cfg.Panels)
 		m.rebuild(i)
 	}
 

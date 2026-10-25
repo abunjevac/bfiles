@@ -97,12 +97,12 @@ func (m *Model) gotoOnFS(p *Panel, text string) tea.Cmd {
 	f := p.fs
 	held := m.hold(f)
 	ctx := m.ctx
-	panel := m.active
+	id, reqID := m.startOpen(m.panelIndex(p.id))
 
 	return func() tea.Msg {
 		e, err := f.Stat(ctx, target)
 
-		msg := openedFSMsg{panel: panel, fs: f, dir: target, err: err}
+		msg := openedFSMsg{panel: id, reqID: reqID, fs: f, dir: target, err: err}
 
 		if err == nil && !e.IsDir {
 			msg.dir, msg.selectName = path.Dir(target), path.Base(target)
@@ -121,18 +121,12 @@ type heldOpened struct {
 
 func (m *Model) gotoDialog() tea.Cmd {
 	p := m.panel()
+	d, cmd := newGotoDialog(m.locationString(p.fs, panelDir(p)), panelDir(p), p.fs.Kind() == vfs.KindLocal,
+		func(m *Model, v string) tea.Cmd { return m.gotoText(v) })
 
-	m.push(&inputDialog{
-		title: "Go to",
-		label: "path, ~/path, archive file or ssh://user@host/path",
-		input: newInput(m.locationString(p.fs, panelDir(p))),
-		width: 72,
-		onSubmit: func(m *Model, v string) tea.Cmd {
-			return m.gotoText(v)
-		},
-	})
+	m.push(d)
 
-	return nil
+	return cmd
 }
 
 func (m *Model) bookmarksDialog() tea.Cmd {
@@ -320,7 +314,7 @@ func (m *Model) helpDialog() {
 
 			items = append(items, listItem{
 				text:  string(cat) + " · " + info.Label,
-				hint:  strings.Join(disp, "  "),
+				hint:  strings.Join(disp, " · "),
 				value: string(info.Action),
 			})
 		}
@@ -347,6 +341,7 @@ func (m *Model) openPrompt(msg promptMsg) {
 
 	if msg.confirm {
 		m.push(&confirmDialog{
+			opened:  timeNow(),
 			title:   "SSH",
 			lines:   []string{msg.text},
 			buttons: []string{"Yes", "No"},
@@ -366,9 +361,10 @@ func (m *Model) openPrompt(msg promptMsg) {
 	in.mask = true
 
 	m.push(&inputDialog{
-		title: "SSH authentication",
-		label: msg.text,
-		input: in,
+		opened: timeNow(),
+		title:  "SSH authentication",
+		label:  msg.text,
+		input:  in,
 		onSubmit: func(_ *Model, v string) tea.Cmd {
 			reply(promptReply{text: v, ok: true})
 

@@ -125,14 +125,14 @@ func (m *Model) startSearch(i int, opts search.Options) {
 		err := search.Run(ctx, f, root, opts, func(batch []vfs.Entry) {
 			count += len(batch)
 
-			send(searchBatchMsg{panel: i, id: id, entries: batch})
+			send(searchBatchMsg{panel: p.id, id: id, entries: batch})
 
 			if count >= maxSearchResults {
 				cancel()
 			}
 		})
 
-		send(searchDoneMsg{panel: i, id: id, err: err})
+		send(searchDoneMsg{panel: p.id, id: id, err: err})
 
 		for _, h := range held {
 			send(releaseMsg{fs: h})
@@ -155,20 +155,22 @@ func (m *Model) endSearch(i int) {
 }
 
 func (m *Model) applySearchBatch(msg searchBatchMsg) tea.Cmd {
-	p := m.panels[msg.panel]
+	i := m.panelIndex(msg.panel)
+	p := m.panels[i]
 
 	if p.search == nil || p.search.id != msg.id {
 		return nil
 	}
 
 	p.search.results = append(p.search.results, msg.entries...)
-	m.rebuild(msg.panel)
+
+	m.rebuild(i)
 
 	return m.schedulePreview()
 }
 
 func (m *Model) applySearchDone(msg searchDoneMsg) tea.Cmd {
-	p := m.panels[msg.panel]
+	p := m.panels[m.panelIndex(msg.panel)]
 
 	if p.search == nil || p.search.id != msg.id {
 		return nil
@@ -215,12 +217,12 @@ func (m *Model) pruneSearch(i int) tea.Cmd {
 			}
 		}
 
-		return searchPrunedMsg{panel: i, id: id, results: kept, held: held}
+		return searchPrunedMsg{panel: p.id, id: id, results: kept, held: held}
 	}
 }
 
 type searchPrunedMsg struct {
-	panel   int
+	panel   int // Panel.id
 	id      int
 	results []vfs.Entry
 	held    []vfs.FS
@@ -231,12 +233,14 @@ func (m *Model) applySearchPruned(msg searchPrunedMsg) {
 		m.release(f)
 	}
 
-	p := m.panels[msg.panel]
+	i := m.panelIndex(msg.panel)
+	p := m.panels[i]
 
 	if p.search == nil || p.search.id != msg.id || p.search.running {
 		return
 	}
 
 	p.search.results = msg.results
-	m.rebuild(msg.panel)
+
+	m.rebuild(i)
 }

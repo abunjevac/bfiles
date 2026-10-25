@@ -6,6 +6,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/abunjevac/bfiles/internal/config"
 	"github.com/abunjevac/bfiles/internal/search"
@@ -34,6 +35,10 @@ type searchState struct {
 
 // Panel is one side of the screen.
 type Panel struct {
+	// id identifies the panel in async messages; unlike its index it survives
+	// swapping the panels
+	id int
+
 	fs      vfs.FS
 	dir     string
 	entries []vfs.Entry // raw listing of dir
@@ -57,9 +62,10 @@ type Panel struct {
 	back []place
 	fwd  []place
 
-	loading bool
-	reqID   int
-	cancel  context.CancelFunc
+	loading  bool
+	listedAt time.Time // when the shown listing was read
+	reqID    int
+	cancel   context.CancelFunc
 
 	search *searchState
 
@@ -76,6 +82,28 @@ func newPanel(cfg *config.Config) *Panel {
 		special:     cfg.Panels.SpecialDirs,
 		sortKey:     cfg.Panels.Sort,
 		rows:        20,
+	}
+}
+
+// applyDefaults takes over panel settings that changed in the config, leaving the
+// ones toggled at runtime alone when the config did not change them.
+func (p *Panel) applyDefaults(prev, next config.Panels) {
+	p.special = next.SpecialDirs
+
+	if next.ShowHidden != prev.ShowHidden {
+		p.showHidden = next.ShowHidden
+	}
+
+	if next.ShowSpecial != prev.ShowSpecial {
+		p.showSpecial = next.ShowSpecial
+	}
+
+	if next.ShowMtime != prev.ShowMtime {
+		p.showMtime = next.ShowMtime
+	}
+
+	if next.Sort != prev.Sort {
+		p.sortKey, p.sortRev = next.Sort, false
 	}
 }
 
@@ -108,7 +136,7 @@ func isParent(e vfs.Entry) bool {
 // targets returns the entries an operation acts on: the selection, or the cursor
 // entry when nothing is selected. ".." is never a target.
 func (p *Panel) targets() []vfs.Entry {
-	if len(p.selected) > 0 {
+	if p.selectedVisible() > 0 {
 		out := make([]vfs.Entry, 0, len(p.selected))
 
 		for _, e := range p.view {
@@ -217,23 +245,44 @@ func (p *Panel) rebuildSelect(keepPath string, sizes func(vfs.Entry) (int64, boo
 	p.clamp()
 }
 
-// pruneSelection drops selections that are no longer visible.
+// pruneSelection drops selections of entries that no longer exist. Entries merely
+// hidden by the filter or the hidden toggle stay selected but are not acted on.
 func (p *Panel) pruneSelection() {
 	if len(p.selected) == 0 {
 		return
 	}
 
-	inView := make(map[string]bool, len(p.view))
+	src := p.entries
 
-	for _, e := range p.view {
-		inView[e.Path] = true
+	if p.search != nil {
+		src = p.search.results
+	}
+
+	exists := make(map[string]bool, len(src))
+
+	for _, e := range src {
+		exists[e.Path] = true
 	}
 
 	for k := range p.selected {
-		if !inView[k] {
+		if !exists[k] {
 			delete(p.selected, k)
 		}
 	}
+}
+
+// selectedVisible counts selected entries currently shown, which are the ones
+// operations act on.
+func (p *Panel) selectedVisible() int {
+	n := 0
+
+	for _, e := range p.view {
+		if p.selected[e.Path] {
+			n++
+		}
+	}
+
+	return n
 }
 
 func (p *Panel) selectName(name string) {

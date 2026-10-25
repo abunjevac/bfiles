@@ -12,7 +12,7 @@ import (
 
 // listedMsg delivers a directory listing for a panel navigation or reload.
 type listedMsg struct {
-	panel   int
+	panel   int // Panel.id
 	reqID   int
 	fs      vfs.FS
 	dir     string
@@ -26,7 +26,8 @@ type listedMsg struct {
 
 // openedFSMsg delivers a newly opened filesystem (archive or SSH) to navigate into.
 type openedFSMsg struct {
-	panel      int
+	panel      int // Panel.id
+	reqID      int // matches Panel.reqID unless the panel moved on meanwhile
 	fs         vfs.FS
 	dir        string
 	selectName string
@@ -59,14 +60,14 @@ type whichKeyTickMsg struct{ seq int }
 
 // searchBatchMsg delivers search results.
 type searchBatchMsg struct {
-	panel   int
+	panel   int // Panel.id
 	id      int
 	entries []vfs.Entry
 }
 
 // searchDoneMsg ends a search.
 type searchDoneMsg struct {
-	panel int
+	panel int // Panel.id
 	id    int
 	err   error
 }
@@ -80,7 +81,7 @@ type opDoneMsg struct {
 	err        error
 	fsID       string
 	selectName string
-	panel      int
+	panel      int // Panel.id
 	info       string
 	held       []vfs.FS
 }

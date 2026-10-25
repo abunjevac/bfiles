@@ -110,9 +110,13 @@ func withSlash(dir string) string {
 // on the source filesystem, relative to the source directory.
 func (m *Model) transferDialog(move bool) tea.Cmd {
 	p, o := m.panel(), m.other()
+
+	// filesystems are fixed when the dialog opens; a panel may switch while it is up
+	srcFS, dstFS := p.fs, o.fs
+	srcDir := panelDir(p)
 	targets := p.targets()
 
-	if len(targets) == 0 || o.fs == nil {
+	if len(targets) == 0 || dstFS == nil {
 		return nil
 	}
 
@@ -125,7 +129,7 @@ func (m *Model) transferDialog(move bool) tea.Cmd {
 
 	m.push(&inputDialog{
 		title: verb + " " + describe(targets),
-		label: "to " + fsName(o.fs) + " (relative paths stay on " + fsName(p.fs) + ")",
+		label: "to " + fsName(dstFS) + " (relative paths stay on " + fsName(srcFS) + ")",
 		input: newInput(def),
 		width: 72,
 		onSubmit: func(m *Model, v string) tea.Cmd {
@@ -134,16 +138,16 @@ func (m *Model) transferDialog(move bool) tea.Cmd {
 				return nil
 			}
 
-			dst, dstPath := o.fs, v
+			dst, dstPath := dstFS, v
 
 			if !strings.HasPrefix(v, "/") {
-				dst, dstPath = p.fs, path.Join(panelDir(p), v)
+				dst, dstPath = srcFS, path.Join(srcDir, v)
 				if strings.HasSuffix(v, "/") {
 					dstPath += "/"
 				}
 			}
 
-			return m.prepareTransfer(op, p.fs, targets, dst, dstPath)
+			return m.prepareTransfer(op, srcFS, targets, dst, dstPath)
 		},
 	})
 
@@ -181,21 +185,24 @@ func (m *Model) prepareTransfer(op jobs.Op, src vfs.FS, targets []vfs.Entry, dst
 
 func (m *Model) deleteDialog() tea.Cmd {
 	p := m.panel()
+
+	// the filesystem is fixed when the dialog opens; the panel may switch while it is up
+	srcFS := p.fs
 	targets := p.targets()
 
 	if len(targets) == 0 {
 		return nil
 	}
 
-	_, canTrash := p.fs.(vfs.Trasher)
+	_, canTrash := srcFS.(vfs.Trasher)
 	trash := m.cfg.UseTrash && canTrash
 
 	run := func(m *Model) tea.Cmd {
 		clear(p.selected)
 
 		return m.applyEnqueue(enqueueMsg{
-			spec: jobs.Spec{Op: jobs.OpDelete, Src: p.fs, Paths: paths(targets), Trash: trash},
-			held: m.hold(p.fs),
+			spec: jobs.Spec{Op: jobs.OpDelete, Src: srcFS, Paths: paths(targets), Trash: trash},
+			held: m.hold(srcFS),
 		})
 	}
 
@@ -254,7 +261,7 @@ func deleteLines(verb string, targets []vfs.Entry, trash bool) []string {
 func (m *Model) quickOp(f vfs.FS, selectName string, op func(ctx context.Context) error) tea.Cmd {
 	held := m.hold(f)
 	ctx := m.ctx
-	panel := m.active
+	id := m.panel().id
 
 	return func() tea.Msg {
 		err := op(ctx)
@@ -265,7 +272,7 @@ func (m *Model) quickOp(f vfs.FS, selectName string, op func(ctx context.Context
 			}
 		}
 
-		return opDoneMsg{err: err, fsID: f.ID(), selectName: selectName, panel: panel, held: held}
+		return opDoneMsg{err: err, fsID: f.ID(), selectName: selectName, panel: id, held: held}
 	}
 }
 
@@ -291,7 +298,7 @@ func (m *Model) applyOpDone(msg opDoneMsg) tea.Cmd {
 
 		req := listedMsg{fs: p.fs, dir: p.dir, keepCursor: true}
 
-		if i == msg.panel {
+		if p.id == msg.panel {
 			req.selectName = msg.selectName
 		}
 
@@ -328,6 +335,9 @@ func validName(v string) error {
 func (m *Model) renameDialog() tea.Cmd {
 	p := m.panel()
 
+	// the filesystem is fixed when the dialog opens; the panel may switch while it is up
+	srcFS := p.fs
+
 	e, ok := p.current()
 	if !ok || isParent(e) {
 		return nil
@@ -359,12 +369,12 @@ func (m *Model) renameDialog() tea.Cmd {
 			dir := path.Dir(e.Path)
 			to := path.Join(dir, v)
 
-			return m.quickOp(p.fs, v, func(ctx context.Context) error {
-				if err := existsErr(ctx, p.fs, to); err != nil {
+			return m.quickOp(srcFS, v, func(ctx context.Context) error {
+				if err := existsErr(ctx, srcFS, to); err != nil {
 					return err
 				}
 
-				return p.fs.Rename(ctx, e.Path, to)
+				return srcFS.Rename(ctx, e.Path, to)
 			})
 		},
 	})
@@ -375,9 +385,13 @@ func (m *Model) renameDialog() tea.Cmd {
 func (m *Model) mkdirDialog() tea.Cmd {
 	p := m.panel()
 
+	// the filesystem is fixed when the dialog opens; the panel may switch while it is up
+	srcFS := p.fs
+	srcDir := panelDir(p)
+
 	m.push(&inputDialog{
 		title: "New directory",
-		label: "in " + m.placeText(p.fs, panelDir(p)) + " (use / for nested dirs)",
+		label: "in " + m.placeText(srcFS, srcDir) + " (use / for nested dirs)",
 		input: newInput(""),
 		onSubmit: func(m *Model, v string) tea.Cmd {
 			v = strings.Trim(strings.TrimSpace(v), "/")
@@ -386,15 +400,15 @@ func (m *Model) mkdirDialog() tea.Cmd {
 				return m.errorToast(err)
 			}
 
-			target := path.Join(panelDir(p), v)
+			target := path.Join(srcDir, v)
 			first, _, _ := strings.Cut(v, "/")
 
-			return m.quickOp(p.fs, first, func(ctx context.Context) error {
-				if err := existsErr(ctx, p.fs, target); err != nil {
+			return m.quickOp(srcFS, first, func(ctx context.Context) error {
+				if err := existsErr(ctx, srcFS, target); err != nil {
 					return err
 				}
 
-				return p.fs.MkdirAll(ctx, target, 0o755)
+				return srcFS.MkdirAll(ctx, target, 0o755)
 			})
 		},
 	})
@@ -405,9 +419,13 @@ func (m *Model) mkdirDialog() tea.Cmd {
 func (m *Model) newFileDialog() tea.Cmd {
 	p := m.panel()
 
+	// the filesystem is fixed when the dialog opens; the panel may switch while it is up
+	srcFS := p.fs
+	srcDir := panelDir(p)
+
 	m.push(&inputDialog{
 		title: "New file",
-		label: "in " + m.placeText(p.fs, panelDir(p)),
+		label: "in " + m.placeText(srcFS, srcDir),
 		input: newInput(""),
 		onSubmit: func(m *Model, v string) tea.Cmd {
 			v = strings.TrimSpace(v)
@@ -416,14 +434,14 @@ func (m *Model) newFileDialog() tea.Cmd {
 				return m.toast("invalid name", levelError)
 			}
 
-			target := path.Join(panelDir(p), v)
+			target := path.Join(srcDir, v)
 
-			return m.quickOp(p.fs, v, func(ctx context.Context) error {
-				if err := existsErr(ctx, p.fs, target); err != nil {
+			return m.quickOp(srcFS, v, func(ctx context.Context) error {
+				if err := existsErr(ctx, srcFS, target); err != nil {
 					return err
 				}
 
-				w, err := p.fs.Create(ctx, target, 0o644)
+				w, err := srcFS.Create(ctx, target, 0o644)
 				if err != nil {
 					return err
 				}
@@ -489,6 +507,10 @@ func isArchiveName(name string) bool {
 
 func (m *Model) packDialog() tea.Cmd {
 	p := m.panel()
+
+	// the filesystem is fixed when the dialog opens; the panel may switch while it is up
+	srcFS := p.fs
+	srcDir := panelDir(p)
 	targets := p.targets()
 
 	if len(targets) == 0 {
@@ -497,7 +519,7 @@ func (m *Model) packDialog() tea.Cmd {
 
 	base := path.Base(targets[0].Path)
 	if len(targets) > 1 {
-		base = path.Base(panelDir(p))
+		base = path.Base(srcDir)
 	}
 
 	if base == "/" || base == "." {
@@ -516,8 +538,8 @@ func (m *Model) packDialog() tea.Cmd {
 				return m.errorToast(err)
 			}
 
-			target := path.Join(panelDir(p), v)
-			src := p.fs
+			target := path.Join(srcDir, v)
+			src := srcFS
 			held := m.hold(src)
 			ctx := m.ctx
 			srcPaths := paths(targets)
@@ -552,18 +574,22 @@ func (m *Model) packDialog() tea.Cmd {
 func (m *Model) extractDialog() tea.Cmd {
 	p, o := m.panel(), m.other()
 
-	if p.fs.Kind() == vfs.KindArchive {
+	// filesystems are fixed when the dialog opens; a panel may switch while it is up
+	srcFS, dstFS := p.fs, o.fs
+	srcDir := panelDir(p)
+
+	if srcFS.Kind() == vfs.KindArchive {
 		return m.transferDialog(false)
 	}
 
 	e, ok := p.current()
-	if !ok || isParent(e) || !isArchiveName(e.Name) || o.fs == nil {
+	if !ok || isParent(e) || !isArchiveName(e.Name) || dstFS == nil {
 		return m.toast("place the cursor on an archive to extract it", levelWarn)
 	}
 
 	m.push(&inputDialog{
 		title: "Extract " + path.Base(e.Name),
-		label: "into directory on " + fsName(o.fs),
+		label: "into directory on " + fsName(dstFS),
 		input: newInput(withSlash(panelDir(o)) + archiveStem(path.Base(e.Name)) + "/"),
 		width: 72,
 		onSubmit: func(m *Model, v string) tea.Cmd {
@@ -572,13 +598,13 @@ func (m *Model) extractDialog() tea.Cmd {
 				return nil
 			}
 
-			dst, dstDir := o.fs, path.Clean(v)
+			dst, dstDir := dstFS, path.Clean(v)
 
 			if !strings.HasPrefix(v, "/") {
-				dst, dstDir = p.fs, path.Join(panelDir(p), v)
+				dst, dstDir = srcFS, path.Join(srcDir, v)
 			}
 
-			src := p.fs
+			src := srcFS
 			held := m.hold(src, dst)
 			ctx := m.ctx
 
@@ -624,6 +650,7 @@ func (m *Model) nextConflict() tea.Cmd {
 	m.conflicts = m.conflicts[1:]
 
 	m.push(&conflictDialog{confirmDialog{
+		opened:   timeNow(),
 		title:    "Target exists",
 		lines:    conflictLines(c),
 		buttons:  []string{"Overwrite", "Skip", "Rename", "Newer only", "Cancel job"},

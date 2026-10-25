@@ -65,7 +65,7 @@ func (m *Model) list(i int, req listedMsg) tea.Cmd {
 	p.cancel = cancel
 	p.loading = true
 
-	req.panel = i
+	req.panel = p.id
 	req.reqID = p.reqID
 
 	// the listing holds a reference until it is applied or dropped
@@ -82,7 +82,8 @@ func (m *Model) list(i int, req listedMsg) tea.Cmd {
 
 // applyListing installs a finished listing, unless the panel has moved on since.
 func (m *Model) applyListing(msg listedMsg) tea.Cmd {
-	p := m.panels[msg.panel]
+	i := m.panelIndex(msg.panel)
+	p := m.panels[i]
 
 	if msg.reqID != p.reqID {
 		m.release(msg.fs)
@@ -103,12 +104,13 @@ func (m *Model) applyListing(msg listedMsg) tea.Cmd {
 	}
 
 	if p.search != nil && !msg.keepCursor {
-		m.endSearch(msg.panel)
+		m.endSearch(i)
 	}
 
 	keep := p.cursorPathIf(sameDir || msg.keepCursor)
 	old := p.fs
 	p.fs, p.dir, p.entries = msg.fs, msg.dir, msg.entries
+	p.listedAt = timeNow()
 
 	// the panel now owns the listing's reference; drop the one it held before
 	m.release(old)
@@ -127,11 +129,21 @@ func (m *Model) applyListing(msg listedMsg) tea.Cmd {
 func (m *Model) listingFailed(msg listedMsg) tea.Cmd {
 	m.release(msg.fs)
 
-	if m.panels[msg.panel].fs == nil {
-		// nothing to fall back to yet: start at home
-		home, _ := os.UserHomeDir()
+	i := m.panelIndex(msg.panel)
 
-		return tea.Batch(m.errorToast(msg.err), m.navigate(msg.panel, m.local, home, "", false))
+	if m.panels[i].fs == nil {
+		// nothing to fall back to yet: try home, then the root, then give up
+		next, _ := os.UserHomeDir()
+
+		if next == "" || msg.dir == next {
+			next = "/"
+		}
+
+		if msg.dir == "/" {
+			return m.errorToast(msg.err)
+		}
+
+		return tea.Batch(m.errorToast(msg.err), m.navigate(i, m.local, next, "", false))
 	}
 
 	return m.errorToast(fmt.Errorf("%s: %w", msg.dir, unwrapPathErr(msg.err)))
@@ -297,14 +309,15 @@ func (m *Model) historyForward() tea.Cmd {
 // openArchiveCmd opens an archive file in the background and enters it.
 func (m *Model) openArchiveCmd(i int, outer vfs.FS, file, inner string) tea.Cmd {
 	m.retain(outer)
-	m.panels[i].loading = true
+
+	id, reqID := m.startOpen(i)
 
 	ctx := m.ctx
 
 	return func() tea.Msg {
 		a, err := archive.Open(ctx, outer, file)
 
-		msg := openedFSMsg{panel: i, dir: "/", err: err}
+		msg := openedFSMsg{panel: id, reqID: reqID, dir: "/", err: err}
 
 		if err == nil {
 			msg.fs = a
@@ -325,8 +338,32 @@ type outerRelease struct {
 	outer vfs.FS
 }
 
+// startOpen marks panel i busy with a new request, so that older listings and
+// opens are recognised as stale.
+func (m *Model) startOpen(i int) (int, int) {
+	p := m.panels[i]
+
+	if p.cancel != nil {
+		p.cancel()
+	}
+
+	p.reqID++
+	p.loading = true
+
+	return p.id, p.reqID
+}
+
 func (m *Model) applyOpened(msg openedFSMsg) tea.Cmd {
-	m.panels[msg.panel].loading = false
+	i := m.panelIndex(msg.panel)
+	p := m.panels[i]
+
+	if msg.reqID != p.reqID {
+		m.discardOpened(msg.fs)
+
+		return nil
+	}
+
+	p.loading = false
 
 	if msg.err != nil {
 		return m.errorToast(msg.err)
@@ -338,27 +375,48 @@ func (m *Model) applyOpened(msg openedFSMsg) tea.Cmd {
 		m.pool.Release(f)
 	}
 
+	list := m.list(i, listedMsg{fs: msg.fs, dir: msg.dir, selectName: msg.selectName, history: true})
+
+	// tell why an archive cannot be changed (duplicate entries, hard links), before
+	// a copy into it fails
+	if a, ok := msg.fs.(*archive.FS); ok && a.ReadOnlyReason() != "" {
+		return tea.Batch(list, m.toast("read-only archive: "+a.ReadOnlyReason(), levelWarn))
+	}
+
 	// list() takes the first model reference; a failed listing drops it and closes the FS
-	return m.list(msg.panel, listedMsg{fs: msg.fs, dir: msg.dir, selectName: msg.selectName, history: true})
+	return list
+}
+
+// discardOpened closes a filesystem opened for a panel that has moved on.
+func (m *Model) discardOpened(f vfs.FS) {
+	switch t := f.(type) {
+	case *sftpfs.FS:
+		// the pool reference from Get was never handed to the model
+		m.pool.Release(t)
+	case *archive.FS:
+		if m.refs[f] == 0 {
+			_ = t.Close()
+		}
+	}
 }
 
 // connectCmd dials an SSH target for panel i.
 func (m *Model) connectCmd(i int, spec location.Spec) tea.Cmd {
-	m.panels[i].loading = true
+	id, reqID := m.startOpen(i)
 
 	cfg := m.sshConfig()
 	t := cfg.Resolve(spec.User, spec.Host, spec.Port)
 	pool := m.pool
 	ctx := m.ctx
 	prompter := &uiPrompter{send: m.send}
-	text := spec.Target() + spec.Path
+	text := spec.String()
 	dirsHistory := m.bundle.Dir
 	limit := m.cfg.SSH.HistoryLimit
 
 	return func() tea.Msg {
 		f, err := pool.Get(ctx, t, prompter)
 		if err != nil {
-			return openedFSMsg{panel: i, err: fmt.Errorf("ssh %s: %w", spec.Target(), err)}
+			return openedFSMsg{panel: id, reqID: reqID, err: fmt.Errorf("ssh %s: %w", spec.Target(), err)}
 		}
 
 		dir := spec.Path
@@ -372,7 +430,7 @@ func (m *Model) connectCmd(i int, spec location.Spec) tea.Cmd {
 
 		rememberTarget(dirsHistory, text, limit)
 
-		return openedFSMsg{panel: i, fs: f, dir: dir}
+		return openedFSMsg{panel: id, reqID: reqID, fs: f, dir: dir}
 	}
 }
 

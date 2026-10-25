@@ -1,7 +1,9 @@
 package archive
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -29,7 +31,19 @@ type FS struct {
 	writer archives.ArchiverAsync // nil when the format is read-only
 	root   *node
 	dirty  bool
+	// readOnly explains why an archive in a writable format must not be rewritten
+	readOnly string
+	// writers counts open overlay writers; Commit waits on cond until none is open
+	writers int
+	cond    *sync.Cond
 }
+
+// Reasons an archive in a writable format is kept read-only.
+const (
+	reasonConflicts = "archive has duplicate or conflicting entries, so rewriting it could lose data"
+	reasonHardLinks = "archive contains hard links, which cannot be written back"
+	reasonReindex   = "archive could not be re-read after saving; reopen it"
+)
 
 var (
 	_ vfs.FS        = (*FS)(nil)
@@ -98,7 +112,10 @@ func newFS(outer vfs.FS, p string) (*FS, error) {
 		return nil, fmt.Errorf("archive-tempdir: %w", err)
 	}
 
-	return &FS{outer: outer, outerPath: p, tmpDir: tmp}, nil
+	a := &FS{outer: outer, outerPath: p, tmpDir: tmp}
+	a.cond = sync.NewCond(&a.mu)
+
+	return a, nil
 }
 
 func localPath(outer vfs.FS, p string) (string, bool) {
@@ -135,44 +152,100 @@ func download(ctx context.Context, outer vfs.FS, p, dir string) (string, error) 
 	return f.Name(), nil
 }
 
-// addEntry inserts one archive member into the tree below root.
-func addEntry(root *node, fi archives.FileInfo) {
+// indexer builds the tree from the archive's members. Later members with the same
+// path win, as when extracting a tar file.
+type indexer struct {
+	root   *node
+	seen   map[string]int   // occurrences so far per member name
+	files  map[string]*node // latest file node per member name, for hard links
+	reason string           // why the archive must stay read-only, if it must
+}
+
+func newIndexer() *indexer {
+	return &indexer{root: newDir("", time.Time{}), seen: map[string]int{}, files: map[string]*node{}}
+}
+
+// add inserts one archive member into the tree.
+func (x *indexer) add(fi archives.FileInfo) {
+	occ := x.seen[fi.NameInArchive]
+	x.seen[fi.NameInArchive]++
+
 	name := strings.Trim(path.Clean("/"+fi.NameInArchive), "/")
 	if name == "" {
 		return
 	}
 
-	parent, err := root.mkdirAll(path.Dir("/"+name), fi.ModTime())
+	parent, err := x.root.mkdirAll(path.Dir("/"+name), fi.ModTime())
 	if err != nil {
-		// a file shadowing a dir path is skipped, not fatal
+		// a file shadows a directory on the path; the member cannot be shown
+		x.conflict()
+
 		return
 	}
 
 	base := path.Base(name)
+	existing, exists := parent.children[base]
 
 	if fi.IsDir() {
-		if existing, ok := parent.children[base]; ok && existing.isDir {
-			existing.mtime = fi.ModTime()
-			existing.mode = fi.Mode()
-
-			return
-		}
-
-		d := newDir(base, fi.ModTime())
-		d.mode = fi.Mode() | fs.ModeDir
-		parent.children[base] = d
+		x.addDir(parent, existing, base, fi)
 
 		return
 	}
 
-	n := &node{name: base, size: fi.Size(), mode: fi.Mode(), mtime: fi.ModTime(), orig: fi.NameInArchive}
+	if exists {
+		x.conflict()
+	}
 
-	// hard links have a target too, but carry their own data and are kept as files
-	if fi.Mode()&fs.ModeSymlink != 0 {
+	n := &node{name: base, size: fi.Size(), mode: fi.Mode(), mtime: fi.ModTime(), orig: fi.NameInArchive, occ: occ}
+
+	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
 		n.link = fi.LinkTarget
+	case isHardLink(fi):
+		x.hardLink(n, fi.LinkTarget)
+	default:
+		x.files[fi.NameInArchive] = n
 	}
 
 	parent.children[base] = n
+}
+
+func (x *indexer) addDir(parent, existing *node, base string, fi archives.FileInfo) {
+	if existing != nil && existing.isDir {
+		existing.mtime = fi.ModTime()
+		existing.mode = fi.Mode()
+
+		return
+	}
+
+	if existing != nil {
+		x.conflict()
+	}
+
+	d := newDir(base, fi.ModTime())
+	d.mode = fi.Mode() | fs.ModeDir
+	parent.children[base] = d
+}
+
+// hardLink makes n read its data from the member it links to.
+func (x *indexer) hardLink(n *node, target string) {
+	x.reason = cmp.Or(x.reason, reasonHardLinks)
+
+	if t, ok := x.files[target]; ok {
+		n.orig, n.occ, n.size = t.orig, t.occ, t.size
+	}
+
+	x.files[n.orig] = n
+}
+
+func (x *indexer) conflict() {
+	x.reason = cmp.Or(x.reason, reasonConflicts)
+}
+
+func isHardLink(fi archives.FileInfo) bool {
+	hdr, ok := fi.Header.(*tar.Header)
+
+	return ok && hdr.Typeflag == tar.TypeLink
 }
 
 // writerFor returns a configured writer for formats bfiles can rebuild, or nil.
@@ -214,9 +287,18 @@ func (a *FS) Caps() vfs.Caps {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	w := a.writer != nil
+	w := a.writer != nil && a.readOnly == ""
 
 	return vfs.Caps{Write: w, Rename: w, Symlink: w}
+}
+
+// ReadOnlyReason explains why an archive in a writable format is read-only, or
+// returns "" when it is not.
+func (a *FS) ReadOnlyReason() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	return a.readOnly
 }
 
 // Dirty implements vfs.Committer.
@@ -293,10 +375,11 @@ func (a *FS) Open(ctx context.Context, p string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(n.link)), nil
 	}
 
-	return extractOne(ctx, src, format, n.orig)
+	return extractOne(ctx, src, format, n.orig, n.occ)
 }
 
-func extractOne(ctx context.Context, src string, format archives.Format, name string) (io.ReadCloser, error) {
+// extractOne streams the occ-th member named name (counting from 0).
+func extractOne(ctx context.Context, src string, format archives.Format, name string, occ int) (io.ReadCloser, error) {
 	ex, ok := format.(archives.Extractor)
 	if !ok {
 		return nil, fmt.Errorf("archive cannot be read")
@@ -315,9 +398,16 @@ func extractOne(ctx context.Context, src string, format archives.Format, name st
 		defer cancel()
 
 		found := false
+		seen := 0
 
 		err := ex.Extract(ctx, f, func(_ context.Context, fi archives.FileInfo) error {
 			if fi.NameInArchive != name {
+				return nil
+			}
+
+			seen++
+
+			if seen <= occ {
 				return nil
 			}
 
@@ -400,15 +490,19 @@ func (a *FS) Create(_ context.Context, p string, perm fs.FileMode) (io.WriteClos
 
 	parent.children[base] = n
 	a.dirty = true
+	a.writers++
 
 	return &overlayWriter{File: f, fs: a, n: n}, nil
 }
 
+// overlayWriter writes one overlay file; while it is open, Commit waits, because
+// the node's size is only known once it is closed.
 type overlayWriter struct {
 	*os.File
 
-	fs *FS
-	n  *node
+	fs     *FS
+	n      *node
+	closed bool
 }
 
 func (w *overlayWriter) Close() error {
@@ -418,9 +512,18 @@ func (w *overlayWriter) Close() error {
 	w.fs.mu.Lock()
 	defer w.fs.mu.Unlock()
 
+	if w.closed {
+		return err
+	}
+
+	w.closed = true
+
 	if statErr == nil {
 		w.n.size = fi.Size()
 	}
+
+	w.fs.writers--
+	w.fs.cond.Broadcast()
 
 	return err
 }
@@ -595,10 +698,10 @@ func (a *FS) index(ctx context.Context) error {
 		return err
 	}
 
-	root := newDir("", time.Time{})
+	x := newIndexer()
 
 	err = ex.Extract(ctx, f, func(_ context.Context, fi archives.FileInfo) error {
-		addEntry(root, fi)
+		x.add(fi)
 
 		return nil
 	})
@@ -608,7 +711,8 @@ func (a *FS) index(ctx context.Context) error {
 
 	a.format = format
 	a.writer = writerFor(format)
-	a.root = root
+	a.root = x.root
+	a.readOnly = x.reason
 	a.dirty = false
 
 	return nil
@@ -636,6 +740,10 @@ func (a *FS) identify(ctx context.Context, f *os.File) (archives.Format, archive
 func (a *FS) writable() error {
 	if a.writer == nil {
 		return vfs.ErrReadOnly
+	}
+
+	if a.readOnly != "" {
+		return fmt.Errorf("%w: %s", vfs.ErrReadOnly, a.readOnly)
 	}
 
 	return nil

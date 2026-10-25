@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"time"
 
 	"github.com/mholt/archives"
 
@@ -30,6 +31,10 @@ func (a *FS) Commit(ctx context.Context) error {
 
 	if err := a.writable(); err != nil {
 		return err
+	}
+
+	if err := a.waitWriters(ctx); err != nil {
+		return fmt.Errorf("archive-commit: %w", err)
 	}
 
 	tmpPath := path.Join(path.Dir(a.outerPath), "."+path.Base(a.outerPath)+".bfiles-tmp")
@@ -56,12 +61,43 @@ func (a *FS) Commit(ctx context.Context) error {
 	a.src = newSrc
 
 	if err := a.index(ctx); err != nil {
-		return err
+		// the overlays are gone, so the old tree cannot be kept or committed again
+		a.root = newDir("", time.Now())
+		a.dirty = false
+		a.readOnly = reasonReindex
+
+		return fmt.Errorf("archive-commit: saved, but re-reading failed: %w", err)
 	}
 
 	// nested archive: the outer archive now holds a modified member
 	if c, ok := a.outer.(vfs.Committer); ok {
 		return c.Commit(ctx)
+	}
+
+	return nil
+}
+
+// waitWriters blocks, with a.mu held, until no overlay writer is open, so no file
+// is committed half-written. Canceling ctx stops the wait.
+func (a *FS) waitWriters(ctx context.Context) error {
+	if a.writers == 0 {
+		return nil
+	}
+
+	// wake the waiter on cancel; taking the lock orders this after cond.Wait
+	stop := context.AfterFunc(ctx, func() {
+		a.mu.Lock()
+		a.cond.Broadcast()
+		a.mu.Unlock()
+	})
+	defer stop()
+
+	for a.writers > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		a.cond.Wait()
 	}
 
 	return nil

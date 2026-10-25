@@ -11,7 +11,8 @@ import (
 )
 
 // node is one entry of the in-memory archive tree. Content comes either from the
-// source archive (orig) or from a local overlay file (overlay); never both.
+// source archive (orig, the occ-th member of that name) or from a local overlay file
+// (overlay); never both.
 type node struct {
 	name     string
 	size     int64
@@ -20,6 +21,7 @@ type node struct {
 	isDir    bool
 	link     string
 	orig     string
+	occ      int
 	overlay  string
 	children map[string]*node
 }

@@ -61,7 +61,7 @@ func scan(ctx context.Context, fsys vfs.FS, paths []string) (int64, int, error) 
 func (q *Queue) runTransfer(ctx context.Context, j *job) error {
 	s := j.spec
 
-	if err := checkTargets(s); err != nil {
+	if err := checkTargets(ctx, s); err != nil {
 		return err
 	}
 
@@ -89,58 +89,21 @@ func (q *Queue) runTransfer(ctx context.Context, j *job) error {
 	return nil
 }
 
-// checkTargets rejects transfers that would overwrite a source with itself or
-// copy a directory into its own subtree.
-func checkTargets(s Spec) error {
-	if s.Rename != "" && len(s.Paths) != 1 {
-		return errors.New("rename needs exactly one source")
-	}
-
-	if !vfs.Same(s.Src, s.Dst) {
-		return nil
-	}
-
-	for _, p := range s.Paths {
-		target := path.Join(s.DstDir, targetName(s, p))
-
-		if target == p {
-			return ErrSameFile
-		}
-
-		if vfs.IsWithin(target, p) {
-			return ErrIntoItself
-		}
-	}
-
-	return nil
-}
-
 // transferOne copies or moves one source item into the destination directory.
 func (q *Queue) transferOne(ctx context.Context, j *job, p string) error {
-	s := j.spec
-
 	if err := j.checkpoint(ctx); err != nil {
 		return err
 	}
 
-	target := path.Join(s.DstDir, targetName(s, p))
+	target := path.Join(j.spec.DstDir, targetName(j.spec, p))
 
 	if done, err := q.tryRename(ctx, j, p, target); err != nil || done {
 		return err
 	}
 
-	ok, err := q.copyItem(ctx, j, p, target)
-	if err != nil {
-		return err
-	}
+	_, err := q.copyItem(ctx, j, p, target)
 
-	if ok && s.Op == OpMove {
-		if err := removeTree(ctx, j, s.Src, p, false); err != nil {
-			j.fail(fmt.Errorf("remove %s after move: %w", p, err))
-		}
-	}
-
-	return nil
+	return err
 }
 
 func targetName(s Spec, p string) string {
@@ -180,7 +143,13 @@ func (q *Queue) moveByRename(ctx context.Context, j *job, src, dst string) (bool
 	j.setCurrent(src)
 
 	if de, statErr := j.spec.Dst.Stat(ctx, dst); statErr == nil {
-		if de.IsDir && se.IsDir && !se.IsLink {
+		if sameItem(ctx, j.spec, src, dst, de) {
+			j.fail(fmt.Errorf("%s: %w", dst, ErrSameFile))
+
+			return true, nil
+		}
+
+		if isRealDir(de) && isRealDir(se) {
 			// merging into an existing directory needs a per-file walk
 			return false, nil
 		}
@@ -211,16 +180,20 @@ func sizeOf(e vfs.Entry) int64 {
 	return e.Size
 }
 
+// isRealDir reports whether e is a directory and not a symlink to one.
+func isRealDir(e vfs.Entry) bool {
+	return e.IsDir && !e.IsLink
+}
+
 // copyItem copies src (file, link or tree) to dst. It reports whether everything
-// below src was copied, which gates deleting the source of a move.
+// below src was copied. A move deletes each source item right after it was copied,
+// so it never deletes anything that was not copied.
 func (q *Queue) copyItem(ctx context.Context, j *job, src, dst string) (bool, error) {
 	if err := j.checkpoint(ctx); err != nil {
 		return false, err
 	}
 
-	s := j.spec
-
-	se, err := s.Src.Stat(ctx, src)
+	se, err := j.spec.Src.Stat(ctx, src)
 	if err != nil {
 		j.fail(err)
 
@@ -229,13 +202,23 @@ func (q *Queue) copyItem(ctx context.Context, j *job, src, dst string) (bool, er
 
 	j.setCurrent(src)
 
-	if se.IsLink && s.Dst.Caps().Symlink {
+	ok, err := q.copyEntry(ctx, j, se, dst)
+	if err != nil || !ok || j.spec.Op != OpMove {
+		return ok, err
+	}
+
+	return removeMoved(ctx, j, se), nil
+}
+
+// copyEntry dispatches on the kind of source entry.
+func (q *Queue) copyEntry(ctx context.Context, j *job, se vfs.Entry, dst string) (bool, error) {
+	if se.IsLink && j.spec.Dst.Caps().Symlink {
 		return q.copyLink(ctx, j, se, dst)
 	}
 
 	if se.IsDir {
 		if se.IsLink {
-			j.fail(fmt.Errorf("%s: cannot copy a directory symlink to this filesystem", src))
+			j.fail(fmt.Errorf("%s: cannot copy a directory symlink to this filesystem", se.Path))
 
 			return false, nil
 		}
@@ -246,22 +229,29 @@ func (q *Queue) copyItem(ctx context.Context, j *job, src, dst string) (bool, er
 	return q.copyFile(ctx, j, se, dst)
 }
 
+// removeMoved deletes a moved source item once it was copied. A directory is only
+// removed when empty: anything that appeared in it during the move stays.
+func removeMoved(ctx context.Context, j *job, se vfs.Entry) bool {
+	err := j.spec.Src.Remove(ctx, se.Path)
+	if err == nil {
+		return true
+	}
+
+	if isRealDir(se) {
+		j.fail(fmt.Errorf("%s changed during the move; left in place: %w", se.Path, err))
+	} else {
+		j.fail(fmt.Errorf("remove %s after move: %w", se.Path, err))
+	}
+
+	return false
+}
+
 func (q *Queue) copyDir(ctx context.Context, j *job, se vfs.Entry, dst string) (bool, error) {
 	s := j.spec
 
-	if de, statErr := s.Dst.Stat(ctx, dst); statErr == nil && !de.IsDir {
-		target, ok, err := q.replaceTarget(ctx, j, se, de, dst)
-		if !ok {
-			return false, err
-		}
-
-		dst = target
-	}
-
-	if err := s.Dst.MkdirAll(ctx, dst, se.Mode.Perm()|0o700); err != nil {
-		j.fail(fmt.Errorf("create %s: %w", dst, err))
-
-		return false, nil
+	dst, ok, err := q.prepareDir(ctx, j, se, dst)
+	if !ok {
+		return false, err
 	}
 
 	children, err := s.Src.ReadDir(ctx, se.Path)
@@ -290,42 +280,115 @@ func (q *Queue) copyDir(ctx context.Context, j *job, se vfs.Entry, dst string) (
 	return complete, nil
 }
 
+// prepareDir makes sure dst is a real directory to copy into. An existing file or
+// symlink (even one to a directory) is replaced, never written through.
+func (q *Queue) prepareDir(ctx context.Context, j *job, se vfs.Entry, dst string) (string, bool, error) {
+	s := j.spec
+
+	de, statErr := s.Dst.Stat(ctx, dst)
+
+	switch {
+	case statErr != nil:
+	case isRealDir(de):
+		if sameItem(ctx, s, se.Path, dst, de) {
+			j.fail(fmt.Errorf("%s: %w", dst, ErrSameFile))
+
+			return "", false, nil
+		}
+	default:
+		target, ok, err := q.replaceTarget(ctx, j, se, de, dst)
+		if !ok {
+			return "", false, err
+		}
+
+		dst = target
+	}
+
+	if err := s.Dst.MkdirAll(ctx, dst, se.Mode.Perm()|0o700); err != nil {
+		j.fail(fmt.Errorf("create %s: %w", dst, err))
+
+		return "", false, nil
+	}
+
+	return dst, true, nil
+}
+
 func (q *Queue) copyLink(ctx context.Context, j *job, se vfs.Entry, dst string) (bool, error) {
 	s := j.spec
 
 	// Stat fills in the link target; an empty one means it could not be read
-	target := se.Link
-
-	if target == "" {
+	if se.Link == "" {
 		j.fail(fmt.Errorf("%s: cannot read link target", se.Path))
 
 		return false, nil
 	}
 
 	if de, statErr := s.Dst.Stat(ctx, dst); statErr == nil {
-		newDst, ok, err := q.replaceTarget(ctx, j, se, de, dst)
+		if sameItem(ctx, s, se.Path, dst, de) {
+			j.fail(fmt.Errorf("%s: %w", dst, ErrSameFile))
+
+			return false, nil
+		}
+
+		target, ok, err := q.overwriteTarget(ctx, j, se, de, dst)
 		if !ok {
 			return false, err
 		}
 
-		dst = newDst
+		// an existing target is replaced atomically, never removed first
+		return placeLink(ctx, j, se.Link, target, target == dst), nil
 	}
 
-	if err := s.Dst.Symlink(ctx, target, dst); err != nil {
+	return placeLink(ctx, j, se.Link, dst, false), nil
+}
+
+// placeLink creates a symlink at dst. With replace, the link is created under a
+// temporary name and renamed over dst, so dst is never missing or lost on failure.
+func placeLink(ctx context.Context, j *job, target, dst string, replace bool) bool {
+	fsys := j.spec.Dst
+	at := dst
+
+	if replace {
+		at = partName(dst)
+		_ = fsys.Remove(ctx, at) // a stale leftover of an interrupted job
+	}
+
+	if err := fsys.Symlink(ctx, target, at); err != nil {
 		j.fail(err)
 
-		return false, nil
+		return false
+	}
+
+	if replace {
+		if err := fsys.Rename(ctx, at, dst); err != nil {
+			_ = fsys.Remove(ctx, at)
+
+			j.fail(fmt.Errorf("replace %s: %w", dst, err))
+
+			return false
+		}
 	}
 
 	j.fileDone()
 
-	return true, nil
+	return true
+}
+
+// partName is the temporary name dst is written under.
+func partName(dst string) string {
+	return path.Join(path.Dir(dst), "."+path.Base(dst)+partSuffix)
 }
 
 func (q *Queue) copyFile(ctx context.Context, j *job, se vfs.Entry, dst string) (bool, error) {
 	s := j.spec
 
 	if de, statErr := s.Dst.Stat(ctx, dst); statErr == nil {
+		if sameItem(ctx, s, se.Path, dst, de) {
+			j.fail(fmt.Errorf("%s: %w", dst, ErrSameFile))
+
+			return false, nil
+		}
+
 		target, ok, err := q.overwriteTarget(ctx, j, se, de, dst)
 		if !ok {
 			return false, err
@@ -334,7 +397,7 @@ func (q *Queue) copyFile(ctx context.Context, j *job, se vfs.Entry, dst string) 
 		dst = target
 	}
 
-	part := path.Join(path.Dir(dst), "."+path.Base(dst)+partSuffix)
+	part := partName(dst)
 
 	written, err := q.transfer(ctx, j, se, part)
 	if err != nil {
@@ -373,9 +436,9 @@ func (q *Queue) copyFile(ctx context.Context, j *job, se vfs.Entry, dst string) 
 	return true, nil
 }
 
-// overwriteTarget resolves a conflict with an existing target that is written in
-// place. It returns the target to use, or false when the item is done with
-// (skipped or failed) or err is set.
+// overwriteTarget resolves a conflict with an existing target that is replaced by
+// a rename. It returns the target to use, or false when the item is done with
+// (skipped or failed) or err is set. A symlink target is replaced, not followed.
 func (q *Queue) overwriteTarget(ctx context.Context, j *job, se, de vfs.Entry, dst string) (string, bool, error) {
 	res, err := q.resolve(ctx, j, se, de)
 	if err != nil {
@@ -390,7 +453,7 @@ func (q *Queue) overwriteTarget(ctx context.Context, j *job, se, de vfs.Entry, d
 	case RenameNew:
 		return freeName(ctx, j.spec.Dst, dst), true, nil
 	case Overwrite:
-		if de.IsDir {
+		if isRealDir(de) {
 			j.fail(fmt.Errorf("%s: target is a directory", dst))
 
 			return "", false, nil
@@ -402,9 +465,9 @@ func (q *Queue) overwriteTarget(ctx context.Context, j *job, se, de vfs.Entry, d
 	return dst, true, nil
 }
 
-// replaceTarget resolves a conflict with an existing target that must be removed
-// first. It returns the target to use, or false when the item is skipped or
-// failed, or err is set.
+// replaceTarget resolves a conflict with an existing file or symlink that must be
+// removed before a directory takes its place. It returns the target to use, or
+// false when the item is skipped or failed, or err is set.
 func (q *Queue) replaceTarget(ctx context.Context, j *job, se, de vfs.Entry, dst string) (string, bool, error) {
 	res, err := q.resolve(ctx, j, se, de)
 	if err != nil {
@@ -478,7 +541,9 @@ func (q *Queue) transfer(ctx context.Context, j *job, se vfs.Entry, dst string) 
 	return written, w.Close()
 }
 
-// resolve asks how to handle an existing target, honouring a remembered "all" answer.
+// resolve asks how to handle an existing target, honouring a remembered "all" answer
+// and an earlier answer for the same target, e.g. when a rename failed and the item
+// is copied instead.
 func (q *Queue) resolve(ctx context.Context, j *job, se, de vfs.Entry) (Resolution, error) {
 	if j.spec.Overwrite {
 		return Overwrite, nil
@@ -486,8 +551,33 @@ func (q *Queue) resolve(ctx context.Context, j *job, se, de vfs.Entry) (Resoluti
 
 	j.mu.Lock()
 	policy := j.policy
+	prev, decided := j.decided[de.Path]
 	j.mu.Unlock()
 
+	if decided {
+		return prev, nil
+	}
+
+	res, err := q.decide(ctx, j, se, de, policy)
+	if err != nil {
+		return res, err
+	}
+
+	j.mu.Lock()
+
+	if j.decided == nil {
+		j.decided = map[string]Resolution{}
+	}
+
+	j.decided[de.Path] = res
+	j.mu.Unlock()
+
+	return res, nil
+}
+
+// decide applies the remembered policy or asks the user, mapping the answer to
+// Overwrite, Skip or RenameNew.
+func (q *Queue) decide(ctx context.Context, j *job, se, de vfs.Entry, policy *Resolution) (Resolution, error) {
 	var res Resolution
 
 	if policy != nil {
@@ -603,7 +693,7 @@ func (q *Queue) runDelete(ctx context.Context, j *job) error {
 			continue
 		}
 
-		if err := removeTree(ctx, j, s.Src, p, true); err != nil {
+		if err := removeTree(ctx, j, s.Src, p); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -617,7 +707,7 @@ func (q *Queue) runDelete(ctx context.Context, j *job) error {
 
 // removeTree deletes p and, for real directories, everything below it. Symlinks are
 // removed themselves, never followed.
-func removeTree(ctx context.Context, j *job, fsys vfs.FS, p string, count bool) error {
+func removeTree(ctx context.Context, j *job, fsys vfs.FS, p string) error {
 	if err := j.checkpoint(ctx); err != nil {
 		return err
 	}
@@ -628,35 +718,31 @@ func removeTree(ctx context.Context, j *job, fsys vfs.FS, p string, count bool) 
 	}
 
 	if e.IsDir && !e.IsLink {
-		if err := removeChildren(ctx, j, fsys, p, count); err != nil {
+		if err := removeChildren(ctx, j, fsys, p); err != nil {
 			return err
 		}
 	}
 
-	if count {
-		j.setCurrent(p)
-	}
+	j.setCurrent(p)
 
 	if err := fsys.Remove(ctx, p); err != nil {
 		return fmt.Errorf("remove %s: %w", p, err)
 	}
 
-	if count {
-		j.fileDone()
-	}
+	j.fileDone()
 
 	return nil
 }
 
 // removeChildren deletes everything below directory p.
-func removeChildren(ctx context.Context, j *job, fsys vfs.FS, p string, count bool) error {
+func removeChildren(ctx context.Context, j *job, fsys vfs.FS, p string) error {
 	children, err := fsys.ReadDir(ctx, p)
 	if err != nil {
 		return err
 	}
 
 	for _, c := range children {
-		if err := removeTree(ctx, j, fsys, c.Path, count); err != nil {
+		if err := removeTree(ctx, j, fsys, c.Path); err != nil {
 			return err
 		}
 	}

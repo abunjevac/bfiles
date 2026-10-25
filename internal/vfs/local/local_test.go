@@ -141,6 +141,86 @@ func TestTrash(t *testing.T) {
 	require.Contains(t, string(info), "my%20file.txt")
 }
 
+func TestTrashKeepsFileWithoutInfo(t *testing.T) {
+	dataHome := t.TempDir()
+
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	old := filepath.Join(dataHome, "Trash", "files", "f.txt")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(old), 0o700))
+	require.NoError(t, os.WriteFile(old, []byte("old"), 0o600))
+
+	p := filepath.Join(t.TempDir(), "f.txt")
+
+	require.NoError(t, os.WriteFile(p, []byte("new"), 0o600))
+	require.NoError(t, local.New().Trash(context.Background(), p))
+
+	data, err := os.ReadFile(old)
+	require.NoError(t, err)
+	require.Equal(t, "old", string(data))
+
+	data, err = os.ReadFile(filepath.Join(dataHome, "Trash", "files", "f.txt.1"))
+	require.NoError(t, err)
+	require.Equal(t, "new", string(data))
+	require.FileExists(t, filepath.Join(dataHome, "Trash", "info", "f.txt.1.trashinfo"))
+}
+
+func TestWalkEntersSymlinkedRoot(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "real", "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "real", "sub", "f"), nil, 0o600))
+	require.NoError(t, os.Symlink("real", filepath.Join(dir, "link")))
+	require.NoError(t, os.Symlink(dir, filepath.Join(dir, "real", "loop")))
+
+	root := filepath.Join(dir, "link")
+
+	var seen []string
+
+	err := vfs.Walk(context.Background(), local.New(), root, func(e vfs.Entry, err error) error {
+		require.NoError(t, err)
+
+		rel, _ := filepath.Rel(root, e.Path)
+		seen = append(seen, rel)
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{".", "loop", "sub", "sub/f"}, seen)
+}
+
+func TestIdentifier(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "x", "d"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "x", "f"), nil, 0o600))
+	require.NoError(t, os.Link(filepath.Join(dir, "x", "f"), filepath.Join(dir, "hard")))
+	require.NoError(t, os.Symlink("x", filepath.Join(dir, "y")))
+
+	fsys := local.New()
+
+	got, err := fsys.RealPath(ctx, filepath.Join(dir, "y", "d"))
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dir, "x", "d"), got)
+
+	got, err = fsys.RealPath(ctx, filepath.Join(dir, "y", "missing", "m"))
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dir, "x", "missing", "m"), got)
+
+	require.True(t, fsys.SameFile(ctx, filepath.Join(dir, "x", "d"), filepath.Join(dir, "y", "d")))
+	require.True(t, fsys.SameFile(ctx, filepath.Join(dir, "x", "f"), filepath.Join(dir, "hard")))
+	require.False(t, fsys.SameFile(ctx, filepath.Join(dir, "x", "f"), filepath.Join(dir, "x", "d")))
+	require.False(t, fsys.SameFile(ctx, filepath.Join(dir, "x", "f"), filepath.Join(dir, "nope")))
+}
+
 func TestIsWithin(t *testing.T) {
 	t.Parallel()
 

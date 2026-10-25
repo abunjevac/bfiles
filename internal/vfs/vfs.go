@@ -105,6 +105,18 @@ type Trasher interface {
 	Trash(ctx context.Context, p string) error
 }
 
+// Identifier is implemented by filesystems that can see through symlinks (and,
+// where possible, bind mounts), so jobs can tell when two paths name the same item
+// and never overwrite or delete a source through another name for it.
+type Identifier interface {
+	// RealPath resolves all symlinks in p. For a path that does not exist, the
+	// deepest existing parent is resolved and the rest is appended unchanged.
+	RealPath(ctx context.Context, p string) (string, error)
+	// SameFile reports whether a and b both exist and, following symlinks, are the
+	// same file or directory.
+	SameFile(ctx context.Context, a, b string) bool
+}
+
 // Opener constructs a filesystem from a file on another filesystem (archives).
 type Opener func(ctx context.Context, outer FS, p string) (FS, error)
 

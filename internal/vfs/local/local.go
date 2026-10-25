@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -23,9 +24,10 @@ const parallelStatThreshold = 2048
 type FS struct{}
 
 var (
-	_ vfs.FS        = (*FS)(nil)
-	_ vfs.Localizer = (*FS)(nil)
-	_ vfs.Trasher   = (*FS)(nil)
+	_ vfs.FS         = (*FS)(nil)
+	_ vfs.Localizer  = (*FS)(nil)
+	_ vfs.Trasher    = (*FS)(nil)
+	_ vfs.Identifier = (*FS)(nil)
 )
 
 // New returns the local filesystem.
@@ -188,6 +190,51 @@ func (*FS) Symlink(_ context.Context, target, p string) error {
 	return os.Symlink(target, p)
 }
 
+// RealPath implements vfs.Identifier.
+func (*FS) RealPath(_ context.Context, p string) (string, error) {
+	return realPath(filepath.Clean(p))
+}
+
+// SameFile implements vfs.Identifier by device and inode, so it also sees through
+// bind mounts and hard links.
+func (*FS) SameFile(_ context.Context, a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+
+	return os.SameFile(ai, bi)
+}
+
+// realPath resolves symlinks in p; a missing tail is appended to its resolved parent.
+func realPath(p string) (string, error) {
+	r, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return r, nil
+	}
+
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+
+	dir := filepath.Dir(p)
+	if dir == p {
+		return p, nil
+	}
+
+	rd, err := realPath(dir)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(rd, filepath.Base(p)), nil
+}
+
 // Readlink returns the target of the symlink at p.
 func (*FS) Readlink(_ context.Context, p string) (string, error) {
 	return os.Readlink(p)
@@ -210,6 +257,14 @@ func (*FS) Trash(_ context.Context, p string) error {
 
 	for i := 1; ; i++ {
 		info := filepath.Join(trash, "info", name+".trashinfo")
+		dst := filepath.Join(trash, "files", name)
+
+		// a file without info (e.g. left by another tool) must not be overwritten
+		if _, err := os.Lstat(dst); err == nil {
+			name = fmt.Sprintf("%s.%d", base, i)
+
+			continue
+		}
 
 		f, err := os.OpenFile(info, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if os.IsExist(err) {
@@ -222,7 +277,7 @@ func (*FS) Trash(_ context.Context, p string) error {
 			return fmt.Errorf("trash: %w", err)
 		}
 
-		if err := moveToTrash(f, info, abs, filepath.Join(trash, "files", name)); err != nil {
+		if err := moveToTrash(f, info, abs, dst); err != nil {
 			return fmt.Errorf("trash: %w", err)
 		}
 

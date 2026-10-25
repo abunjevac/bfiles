@@ -47,8 +47,9 @@ type Spec struct {
 	// Trash moves deleted items to the trash when the source supports it.
 	Trash bool
 	Title string
-	// After runs once the job has finished, whatever the outcome (e.g. to close a
-	// temporary archive filesystem).
+	// After runs exactly once when the job is over, whatever the outcome: after it
+	// ran, when it is canceled while waiting, or when the queue is closed before it
+	// started (e.g. to close a temporary archive filesystem).
 	After func()
 }
 
@@ -148,10 +149,12 @@ type job struct {
 	started    time.Time
 	finished   time.Time
 	policy     *Resolution
-	resume     chan struct{} // closed when unpaused
+	decided    map[string]Resolution // answers per target path within this job
+	resume     chan struct{}         // closed when unpaused
 	answer     chan Answer
 	cancel     context.CancelFunc
 	canceled   bool
+	afterOnce  sync.Once
 }
 
 func (j *job) info() Info {
@@ -190,6 +193,13 @@ func (j *job) info() Info {
 	}
 
 	return inf
+}
+
+// runAfter runs Spec.After unless it already ran.
+func (j *job) runAfter() {
+	if j.spec.After != nil {
+		j.afterOnce.Do(j.spec.After)
+	}
 }
 
 // checkpoint blocks while the job is paused and reports cancellation.

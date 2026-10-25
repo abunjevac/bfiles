@@ -176,7 +176,10 @@ func (q *Queue) TogglePause(id int) {
 
 // Cancel stops a running job or removes a waiting one.
 func (q *Queue) Cancel(id int) {
-	var info *Info
+	var (
+		info    *Info
+		removed *job
+	)
 
 	q.withJob(id, func(j *job) {
 		j.canceled = true
@@ -190,12 +193,15 @@ func (q *Queue) Cancel(id int) {
 
 			inf := Info{ID: j.id, Title: j.spec.Title, Op: j.spec.Op, State: Canceled}
 			info = &inf
+			removed = j
 		default:
 			// finished jobs stay as they are
 		}
 	})
 
 	if info != nil {
+		// a job that never started still owes its cleanup
+		removed.runAfter()
 		q.emit(Event{Finished: info})
 
 		return
@@ -270,6 +276,8 @@ func (q *Queue) Close() {
 
 	q.closed = true
 
+	var unstarted []*job
+
 	for _, j := range q.jobs {
 		j.mu.Lock()
 
@@ -279,10 +287,20 @@ func (q *Queue) Close() {
 			j.cancel()
 		}
 
+		if j.state == Waiting {
+			j.state = Canceled
+			j.finished = time.Now()
+			unstarted = append(unstarted, j)
+		}
+
 		j.mu.Unlock()
 	}
 
 	q.mu.Unlock()
+
+	for _, j := range unstarted {
+		j.runAfter()
+	}
 
 	q.wg.Wait()
 	close(q.stop)
@@ -359,9 +377,7 @@ func (q *Queue) run(ctx context.Context, j *job) {
 	// commit even when the job was canceled, see commitAll
 	commitErr := commitAll(context.WithoutCancel(ctx), j.spec.Src, j.spec.Dst)
 
-	if j.spec.After != nil {
-		j.spec.After()
-	}
+	j.runAfter()
 
 	j.mu.Lock()
 

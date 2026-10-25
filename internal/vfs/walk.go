@@ -14,15 +14,16 @@ var SkipDir = fs.SkipDir //nolint:errname,gochecknoglobals // mirrors io/fs.Skip
 // failure to read the directory at e; returning nil continues the walk.
 type WalkFunc func(e Entry, err error) error
 
-// Walk visits root and everything below it in lexical order per directory. It never
-// follows directory symlinks, so it cannot loop and never escapes the tree.
+// Walk visits root and everything below it in lexical order per directory. A root
+// that is a symlink to a directory is entered, but symlinks below the root are never
+// followed, so the walk cannot loop and never escapes the tree.
 func Walk(ctx context.Context, fsys FS, root string, fn WalkFunc) error {
 	e, err := fsys.Stat(ctx, root)
 	if err != nil {
 		return fn(Entry{Path: root, Name: path.Base(root)}, err)
 	}
 
-	err = walk(ctx, fsys, e, fn)
+	err = walk(ctx, fsys, e, fn, true)
 	if errors.Is(err, SkipDir) {
 		return nil
 	}
@@ -30,7 +31,7 @@ func Walk(ctx context.Context, fsys FS, root string, fn WalkFunc) error {
 	return err
 }
 
-func walk(ctx context.Context, fsys FS, e Entry, fn WalkFunc) error {
+func walk(ctx context.Context, fsys FS, e Entry, fn WalkFunc, isRoot bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -39,7 +40,7 @@ func walk(ctx context.Context, fsys FS, e Entry, fn WalkFunc) error {
 		return err
 	}
 
-	if !e.IsDir || e.IsLink {
+	if !e.IsDir || (e.IsLink && !isRoot) {
 		return nil
 	}
 
@@ -59,7 +60,7 @@ func walk(ctx context.Context, fsys FS, e Entry, fn WalkFunc) error {
 // child.
 func walkChildren(ctx context.Context, fsys FS, children []Entry, fn WalkFunc) error {
 	for _, c := range children {
-		if err := walk(ctx, fsys, c, fn); err != nil && !errors.Is(err, SkipDir) {
+		if err := walk(ctx, fsys, c, fn, false); err != nil && !errors.Is(err, SkipDir) {
 			return err
 		}
 	}

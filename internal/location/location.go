@@ -54,19 +54,47 @@ func (s Spec) Target() string {
 	return sb.String()
 }
 
-// String renders the spec in a form ParseArg accepts.
+// homePrefix marks a home-relative remote path in the URL form, which otherwise
+// only holds absolute paths.
+const homePrefix = "/~"
+
+// String renders the spec in a form ParseArg accepts. SSH specs use the canonical
+// ssh://[user@]host[:port]/path form, with a home-relative path written as /~/rel
+// (or /~ for the home directory itself), so that ParseArg(s.String()) == s.
 func (s Spec) String() string {
 	if s.Kind != SSH {
 		return s.Path
 	}
 
-	return "ssh://" + s.Target() + s.Path
+	u := url.URL{Scheme: "ssh", Host: s.Host, Path: s.Path}
+
+	if strings.Contains(s.Host, ":") {
+		u.Host = "[" + s.Host + "]"
+	}
+
+	if s.Port != 0 {
+		u.Host += ":" + strconv.Itoa(s.Port)
+	}
+
+	if s.User != "" {
+		u.User = url.User(s.User)
+	}
+
+	switch {
+	case s.Path == "":
+		u.Path = homePrefix
+	case !strings.HasPrefix(s.Path, "/"):
+		u.Path = homePrefix + "/" + s.Path
+	}
+
+	return u.String()
 }
 
 // ParseArg parses a command-line location. Relative local paths resolve against cwd.
 //
 //	/dir, dir, ./x.zip                   local directory or archive file
 //	ssh://[user@]host[:port][/path]      SSH
+//	ssh://[user@]host[:port]/~[/path]    SSH, path relative to the remote home
 //	[user@]host:path                     scp-style SSH, when no such local path exists
 //	user@host                            SSH home directory
 func ParseArg(arg, cwd string) (Spec, error) {
@@ -117,6 +145,13 @@ func parseURL(arg string) (Spec, error) {
 	}
 
 	s := Spec{Kind: SSH, Host: u.Hostname(), User: u.User.Username(), Path: u.Path}
+
+	switch {
+	case s.Path == homePrefix:
+		s.Path = ""
+	case strings.HasPrefix(s.Path, homePrefix+"/"):
+		s.Path = s.Path[len(homePrefix)+1:]
+	}
 
 	if p := u.Port(); p != "" {
 		port, err := strconv.Atoi(p)

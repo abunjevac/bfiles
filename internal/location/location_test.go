@@ -31,10 +31,10 @@ func TestParseArg(t *testing.T) {
 		{cwd, location.Spec{Kind: location.Local, Path: cwd}},
 		{"a.zip", location.Spec{Kind: location.Archive, Path: filepath.Join(cwd, "a.zip")}},
 		{"notes.txt", location.Spec{Kind: location.Local, Path: cwd, Select: "notes.txt"}},
-		{"ssh://pi@nas:2222/srv", location.Spec{Kind: location.SSH, User: "pi", Host: host, Port: 2222, Path: "/srv"}},
+		{"ssh://pi@nas:2222/srv", location.Spec{Kind: location.SSH, User: "pi", Host: host, Port: 2222, Path: srvPath}},
 		{"sftp://nas", location.Spec{Kind: location.SSH, Host: host}},
 		{"pi@nas:/srv/media", location.Spec{Kind: location.SSH, User: "pi", Host: host, Path: "/srv/media"}},
-		{"nas:logs", location.Spec{Kind: location.SSH, Host: host, Path: "logs"}},
+		{"nas:logs", location.Spec{Kind: location.SSH, Host: host, Path: logsPath}},
 		{"pi@nas", location.Spec{Kind: location.SSH, User: "pi", Host: host}},
 	}
 
@@ -60,7 +60,7 @@ func TestParseArgErrors(t *testing.T) {
 func TestTargetString(t *testing.T) {
 	t.Parallel()
 
-	s := location.Spec{Kind: location.SSH, User: "pi", Host: host, Port: 2222, Path: "/srv"}
+	s := location.Spec{Kind: location.SSH, User: "pi", Host: host, Port: 2222, Path: srvPath}
 
 	require.Equal(t, "pi@nas:2222", s.Target())
 	require.Equal(t, "ssh://pi@nas:2222/srv", s.String())

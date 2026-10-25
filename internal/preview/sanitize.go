@@ -107,7 +107,9 @@ func csi(sb *strings.Builder, s string, i int, noBg bool) int {
 // (an empty sequence would mean reset).
 func writeSGR(sb *strings.Builder, params string, noBg bool) {
 	if filtered := filterSGR(params, noBg); filtered != "" || params == "" {
-		sb.WriteString("\x1b[" + filtered + "m")
+		sb.WriteString("\x1b[")
+		sb.WriteString(filtered)
+		sb.WriteByte('m')
 	}
 }
 

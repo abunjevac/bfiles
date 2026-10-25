@@ -310,7 +310,8 @@ func (d *chmodDialog) gridRow(m *Model, r int) string {
 		box := " " + checkbox(d.mode&d.bit(r, c) != 0) + " "
 
 		if d.row == r && d.col == c {
-			sb.WriteString(m.st.boxCursor.Render(box) + m.st.boxText.Render("   "))
+			sb.WriteString(m.st.boxCursor.Render(box))
+			sb.WriteString(m.st.boxText.Render("   "))
 		} else {
 			sb.WriteString(m.st.boxText.Render(box + "   "))
 		}

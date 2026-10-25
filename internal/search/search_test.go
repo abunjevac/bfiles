@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -94,4 +95,32 @@ func TestSearchBadRegex(t *testing.T) {
 
 	err := search.Run(context.Background(), local.New(), t.TempDir(), search.Options{Pattern: "re:("}, func([]vfs.Entry) {})
 	require.ErrorContains(t, err, "regular expression")
+}
+
+const splitTxt = "split.txt"
+
+func TestContentAfterLongLine(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	long := strings.Repeat("x", 2<<20)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "long.txt"), []byte(long+"\nNeedle here\n"), 0o600))
+
+	// a match straddling a chunk boundary, and one starting with a split rune
+	edge := strings.Repeat("y", 64<<10-3) + "NEEDLE"
+	split := strings.Repeat("y", 64<<10-1) + "äNEEDLE"
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "edge.txt"), []byte(edge), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, splitTxt), []byte(split), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "none.txt"), []byte(long), 0o600))
+
+	got := run(t, dir, search.Options{Content: "needle"})
+	require.Equal(t, []string{"edge.txt", "long.txt", splitTxt}, got)
+
+	got = run(t, dir, search.Options{Content: "äneedle"})
+	require.Equal(t, []string{splitTxt}, got)
+
+	got = run(t, dir, search.Options{Content: "äNEEDLE", CaseSensitive: true})
+	require.Equal(t, []string{splitTxt}, got)
 }

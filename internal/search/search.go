@@ -1,7 +1,6 @@
 package search
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -11,12 +10,16 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/abunjevac/bfiles/internal/vfs"
 )
 
 // maxContentBytes caps how much of a file is scanned for content matches.
 const maxContentBytes = 32 << 20
+
+// chunkSize is how much of a file is searched at a time.
+const chunkSize = 64 << 10
 
 // batch limits how often results are handed to the UI.
 const (
@@ -174,20 +177,64 @@ func contains(ctx context.Context, fsys vfs.FS, e vfs.Entry, o Options) bool {
 		needle = bytes.ToLower(needle)
 	}
 
-	sc := bufio.NewScanner(io.LimitReader(r, maxContentBytes))
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	return readContains(io.LimitReader(r, maxContentBytes), needle, !o.CaseSensitive)
+}
 
-	for sc.Scan() {
-		line := sc.Bytes()
+// readContains searches r chunk by chunk, keeping the last len(needle)-1 bytes of
+// each chunk so a match across a chunk boundary is found. With fold, chunks are
+// lowered only up to complete UTF-8 sequences, so no rune is split.
+func readContains(r io.Reader, needle []byte, fold bool) bool {
+	var (
+		keep    = len(needle) - 1
+		window  = make([]byte, 0, chunkSize+keep+utf8.UTFMax)
+		chunk   = make([]byte, chunkSize)
+		partial []byte
+	)
 
-		if !o.CaseSensitive {
-			line = bytes.ToLower(line)
+	for {
+		n, err := r.Read(chunk)
+		data := slices.Concat(partial, chunk[:n])
+
+		partial = nil
+
+		if fold {
+			cut := runeBoundary(data, err != nil)
+			partial = bytes.Clone(data[cut:])
+			data = bytes.ToLower(data[:cut])
 		}
 
-		if bytes.Contains(line, needle) {
+		window = append(window, data...)
+
+		if bytes.Contains(window, needle) {
 			return true
+		}
+
+		if err != nil {
+			return false
+		}
+
+		if len(window) > keep {
+			window = window[:copy(window, window[len(window)-keep:])]
+		}
+	}
+}
+
+// runeBoundary returns where an incomplete UTF-8 sequence at the end of b starts,
+// or len(b) when there is none or at the end of input.
+func runeBoundary(b []byte, eof bool) int {
+	if eof {
+		return len(b)
+	}
+
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return i
+			}
+
+			break
 		}
 	}
 
-	return false
+	return len(b)
 }

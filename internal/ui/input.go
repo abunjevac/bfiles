@@ -14,6 +14,9 @@ type textInput struct {
 	value []rune
 	pos   int
 	mask  bool
+	// selected marks the whole value as selected: typing replaces it, moving the
+	// cursor keeps it.
+	selected bool
 }
 
 func newInput(v string) textInput {
@@ -22,12 +25,39 @@ func newInput(v string) textInput {
 	return textInput{value: r, pos: len(r)}
 }
 
+// newSelectedInput starts with the whole value selected, so typing replaces it.
+func newSelectedInput(v string) textInput {
+	t := newInput(v)
+	t.selected = len(t.value) > 0
+
+	return t
+}
+
 func (t *textInput) String() string { return string(t.value) }
+
+// collapseSelection ends a whole-value selection before an editing key: keys that
+// type or delete replace the value, cursor keys keep it.
+func (t *textInput) collapseSelection(key string, text bool) {
+	if !t.selected {
+		return
+	}
+
+	t.selected = false
+
+	switch {
+	case text, key == keyBackspace, key == keyDelete, key == "ctrl+h", key == keyCtrlD:
+		t.value = nil
+		t.pos = 0
+	case key == keyLeft, key == keyHome, key == keyCtrlA, key == keyCtrlB:
+		t.pos = 0
+	}
+}
 
 // update applies an editing key and reports whether it was consumed.
 func (t *textInput) update(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case tea.PasteMsg:
+		t.collapseSelection("", true)
 		t.insert(strings.ReplaceAll(msg.Content, "\n", " "))
 
 		return true
@@ -43,7 +73,7 @@ func (t *textInput) update(msg tea.Msg) bool {
 //nolint:gochecknoglobals // static key table
 var inputKeys = map[string]func(t *textInput){
 	keyLeft:         func(t *textInput) { t.pos = max(t.pos-1, 0) },
-	"ctrl+b":        func(t *textInput) { t.pos = max(t.pos-1, 0) },
+	keyCtrlB:        func(t *textInput) { t.pos = max(t.pos-1, 0) },
 	keyRight:        func(t *textInput) { t.pos = min(t.pos+1, len(t.value)) },
 	"ctrl+f":        func(t *textInput) { t.pos = min(t.pos+1, len(t.value)) },
 	keyHome:         func(t *textInput) { t.pos = 0 },
@@ -61,7 +91,10 @@ var inputKeys = map[string]func(t *textInput){
 }
 
 func (t *textInput) key(msg tea.KeyPressMsg) bool {
-	if fn, ok := inputKeys[msg.String()]; ok {
+	key := msg.String()
+
+	if fn, ok := inputKeys[key]; ok {
+		t.collapseSelection(key, false)
 		fn(t)
 
 		return true
@@ -73,6 +106,7 @@ func (t *textInput) key(msg tea.KeyPressMsg) bool {
 		return false
 	}
 
+	t.collapseSelection(key, true)
 	t.insert(k.Text)
 
 	return true
@@ -144,7 +178,7 @@ func (t *textInput) render(w int, base, cursor lipgloss.Style) string {
 	for i := start; i < len(runes) && ansi.StringWidth(sb.String()) < w; i++ {
 		ch := string(runes[i])
 
-		if i == t.pos {
+		if i == t.pos || t.selected {
 			sb.WriteString(cursor.Render(ch))
 
 			continue

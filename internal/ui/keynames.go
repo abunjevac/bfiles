@@ -22,6 +22,7 @@ const (
 	keyCtrlD     = "ctrl+d"
 	keyCtrlA     = "ctrl+a"
 	keyCtrlE     = "ctrl+e"
+	keyCtrlB     = "ctrl+b"
 )
 
 // isCancel reports keys that close a dialog.

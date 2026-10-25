@@ -132,6 +132,13 @@ func canonicalName(name string, mods map[string]bool) string {
 		return strings.ToUpper(name)
 	}
 
+	// with alt (or meta, ...) terminals report a shifted letter as shift plus the
+	// lowercase letter ("alt+shift+g"); with ctrl, legacy terminals cannot report
+	// shift at all, so "ctrl+Q" keeps meaning ctrl+q
+	if len(mods) > 0 && !mods["ctrl"] && strings.ToLower(name) != name {
+		mods["shift"] = true
+	}
+
 	if len(mods) > 0 {
 		return strings.ToLower(name)
 	}

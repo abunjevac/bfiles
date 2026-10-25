@@ -37,6 +37,11 @@ func TestNormalize(t *testing.T) {
 		{"ctrl++", "ctrl++"},
 		{"leader", space},
 		{"alt+F7", "alt+f7"},
+		{"alt+G", "alt+shift+g"},
+		{"Alt+shift+G", "alt+shift+g"},
+		{"meta+alt+X", "alt+shift+meta+x"},
+		{"alt+g", "alt+g"},
+		{"ctrl+alt+G", "ctrl+alt+g"},
 	}
 
 	for _, tc := range tests {

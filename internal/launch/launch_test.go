@@ -45,3 +45,14 @@ func TestDetachedErrors(t *testing.T) {
 	require.ErrorIs(t, launch.Detached(nil, "/"), launch.ErrEmptyCommand)
 	require.Error(t, launch.Detached([]string{"definitely-not-a-real-binary-xyz"}, "/"))
 }
+
+func TestExpandDoesNotRescanValues(t *testing.T) {
+	t.Parallel()
+
+	got := launch.Expand(
+		[]string{"glow", "-w", "{width}", fileVar, "{unknown}", "{{file}}"},
+		launch.Vars{Values: map[string]string{"file": "/d/{width}.md", "width": "80"}},
+	)
+
+	require.Equal(t, []string{"glow", "-w", "80", "/d/{width}.md", "{unknown}", "{/d/{width}.md}"}, got)
+}

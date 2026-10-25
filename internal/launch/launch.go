@@ -33,14 +33,49 @@ func Expand(tmpl []string, v Vars) []string {
 			}
 		}
 
-		for k, val := range v.Values {
-			arg = strings.ReplaceAll(arg, "{"+k+"}", val)
-		}
-
-		out = append(out, arg)
+		out = append(out, substitute(arg, v.Values))
 	}
 
 	return out
+}
+
+// substitute replaces each known {name} token in one left-to-right pass, so
+// placeholder-like text inside a substituted value is never expanded again.
+func substitute(arg string, values map[string]string) string {
+	var sb strings.Builder
+
+	for {
+		start := strings.IndexByte(arg, '{')
+		if start < 0 {
+			break
+		}
+
+		end := strings.IndexByte(arg[start+1:], '}')
+		if end < 0 {
+			break
+		}
+
+		end += start + 1
+
+		val, ok := values[arg[start+1:end]]
+		if !ok {
+			// keep the brace and rescan after it, so "{{file}" still finds {file}
+			sb.WriteString(arg[:start+1])
+
+			arg = arg[start+1:]
+
+			continue
+		}
+
+		sb.WriteString(arg[:start])
+		sb.WriteString(val)
+
+		arg = arg[end+1:]
+	}
+
+	sb.WriteString(arg)
+
+	return sb.String()
 }
 
 // Detached starts argv in its own session with no terminal attached, so it outlives

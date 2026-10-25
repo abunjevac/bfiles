@@ -191,6 +191,11 @@ func (d *gotoDialog) update(m *Model, msg tea.Msg) (bool, tea.Cmd) {
 		return true, d.onSubmit(m, d.input.String())
 	case key == keyTab:
 		return false, d.completeTab()
+	case isGotoShortcut(key):
+		dir, _ := userDir(key)
+		d.setText(tildePath(dir) + "/")
+
+		return false, d.refresh()
 	case d.moveSel(key):
 		return false, nil
 	}
@@ -304,7 +309,8 @@ func (d *gotoDialog) view(m *Model, w, _ int) string {
 		lines = append(lines, d.suggestionLines(m, inner)...)
 	}
 
-	lines = append(lines, "", m.keyHint("⇥", "complete", "↑↓", "choose", "⏎", "go", "Esc", "cancel"))
+	lines = append(lines, "", m.keyHint("⇥", "complete", "↑↓", "choose", "⏎", "go", "Esc", "cancel"),
+		m.keyHint("A-h", "home", "A-d", "desktop", "A-w", "downloads"))
 
 	return m.renderBox("Go to", lines, bw)
 }

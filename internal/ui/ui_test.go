@@ -680,3 +680,35 @@ func TestSavedPanelSettingsApplyLive(t *testing.T) {
 	h.run(h.m.reloadConfigCmd())
 	h.waitFor(func() bool { return h.m.panels[0].showHidden && h.m.panels[1].showHidden }, "hidden shown")
 }
+
+func TestGotoUserDirShortcuts(t *testing.T) {
+	home := t.TempDir()
+	conf := filepath.Join(home, ".config")
+
+	require.NoError(t, os.MkdirAll(conf, 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "Desktop"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "elsewhere"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(conf, "user-dirs.dirs"),
+		[]byte("XDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOWNLOAD_DIR=\"$HOME/elsewhere\"\n"), 0o600))
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	dir := fixture(t)
+	h := newHarness(t, dir, dir)
+
+	for key, want := range map[string]string{
+		"alt+d": "~/Desktop/",
+		"alt+w": "~/elsewhere/",
+		"alt+h": "~/",
+	} {
+		h.keys("ctrl+g", key)
+
+		d, ok := h.m.top().(*gotoDialog)
+		require.True(t, ok)
+		require.Equal(t, want, d.input.String(), key)
+		require.Equal(t, dir, h.m.panel().dir, "the shortcut only fills in the location")
+
+		h.keys("esc")
+	}
+}

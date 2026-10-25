@@ -94,7 +94,7 @@ you assign is taken away from the action that had it by default.
 | `Tab`                      | Switch panel                             |
 | `H` / `L`                  | History back / forward                   |
 | `~`                        | Home directory                           |
-| `Ctrl+G`                   | Go to a path or `ssh://` target; local paths complete from a list (`Tab`, `↑↓`), and the current location starts selected so typing replaces it |
+| `Ctrl+G`                   | Go to a path or `ssh://` target; local paths complete from a list (`Tab`, `↑↓`), and the current location starts selected so typing replaces it; `Alt+h` / `Alt+d` / `Alt+w` fill in home, desktop or downloads to append to (desktop and downloads follow `~/.config/user-dirs.dirs`) |
 | `'`                        | Bookmarks                                |
 | `=`                        | Show this location in the other panel    |
 | `/`                        | Quick filter                             |

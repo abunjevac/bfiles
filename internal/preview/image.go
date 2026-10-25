@@ -25,17 +25,16 @@ import (
 // maxImageBytes bounds how much is read to decode an image.
 const maxImageBytes = 64 << 20
 
+// maxImagePixels bounds the decoded size: a tiny file can declare huge dimensions,
+// and decoders allocate the full canvas up front.
+const maxImagePixels = 50_000_000
+
 func imagePreview(ctx context.Context, req Request) Result {
-	r, err := req.FS.Open(ctx, req.Entry.Path)
+	open := func() (io.ReadCloser, error) { return req.FS.Open(ctx, req.Entry.Path) }
+
+	img, format, err := decodeBounded(open)
 	if err != nil {
 		return errorResult(err)
-	}
-
-	defer r.Close()
-
-	img, format, err := image.Decode(io.LimitReader(r, maxImageBytes))
-	if err != nil {
-		return errorResult(fmt.Errorf("decode image: %w", err))
 	}
 
 	b := img.Bounds()
@@ -45,6 +44,41 @@ func imagePreview(ctx context.Context, req Request) Result {
 		Title: fmt.Sprintf("%s · %d×%d", format, b.Dx(), b.Dy()),
 		Lines: halfBlocks(img, req.Width, req.Height),
 	}
+}
+
+// decodeBounded checks the declared dimensions before decoding, opening the source
+// twice so the header check does not need to buffer the whole file.
+func decodeBounded(open func() (io.ReadCloser, error)) (image.Image, string, error) {
+	r, err := open()
+	if err != nil {
+		return nil, "", err
+	}
+
+	cfg, _, err := image.DecodeConfig(io.LimitReader(r, maxImageBytes))
+
+	_ = r.Close()
+
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image: %w", err)
+	}
+
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return nil, "", fmt.Errorf("image too large to preview: %d×%d", cfg.Width, cfg.Height)
+	}
+
+	r, err = open()
+	if err != nil {
+		return nil, "", err
+	}
+
+	defer r.Close()
+
+	img, format, err := image.Decode(io.LimitReader(r, maxImageBytes))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image: %w", err)
+	}
+
+	return img, format, nil
 }
 
 // halfBlocks draws img into width×height cells. Each cell shows two vertical pixels:
@@ -144,14 +178,7 @@ func videoPreview(ctx context.Context, req Request) (Result, bool) {
 		return Result{}, false
 	}
 
-	f, err := os.Open(out)
-	if err != nil {
-		return Result{}, false
-	}
-
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
+	img, _, err := decodeBounded(func() (io.ReadCloser, error) { return os.Open(out) })
 	if err != nil {
 		return Result{}, false
 	}

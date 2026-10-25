@@ -41,9 +41,9 @@ func StyleFor(theme string, dark bool) string {
 
 func textPreview(data []byte, truncated bool, req Request) Result {
 	text := string(data)
-	lines := splitLines(text, req.MaxLines)
+	lines, total := splitLines(text, req.MaxLines)
 
-	if len(lines) < strings.Count(text, "\n") {
+	if len(lines) < total {
 		truncated = true
 	}
 
@@ -61,13 +61,16 @@ func textPreview(data []byte, truncated bool, req Request) Result {
 	return Result{Kind: KindText, Title: lexerName(req.Entry.Name, text), Lines: lines, Truncated: truncated}
 }
 
-func splitLines(text string, limit int) []string {
+// splitLines returns at most limit lines and the total number of lines in text.
+func splitLines(text string, limit int) ([]string, int) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
 
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
+
+	total := len(lines)
 
 	if len(lines) > limit {
 		lines = lines[:limit]
@@ -77,7 +80,7 @@ func splitLines(text string, limit int) []string {
 		lines[i] = expandTabs(l)
 	}
 
-	return lines
+	return lines, total
 }
 
 func expandTabs(s string) string {

@@ -85,7 +85,7 @@ func Render(ctx context.Context, req Request) Result {
 	}
 
 	if !isText(head) {
-		return hexPreview(head, req)
+		return hexPreview(head, truncated, req)
 	}
 
 	return textPreview(head, truncated, req)
@@ -197,8 +197,9 @@ func sortEntries(entries []vfs.Entry) {
 	})
 }
 
-func hexPreview(data []byte, req Request) Result {
-	rows := min(req.MaxLines, (len(data)+15)/16)
+func hexPreview(data []byte, truncated bool, req Request) Result {
+	total := (len(data) + 15) / 16
+	rows := min(req.MaxLines, total)
 	lines := make([]string, 0, rows)
 
 	for i := range rows {
@@ -227,5 +228,5 @@ func hexPreview(data []byte, req Request) Result {
 		lines = append(lines, fmt.Sprintf("\x1b[2m%08x\x1b[22m  %s %s", i*16, hexPart.String(), textPart.String()))
 	}
 
-	return Result{Kind: KindBinary, Title: "binary", Lines: lines}
+	return Result{Kind: KindBinary, Title: "binary", Lines: lines, Truncated: truncated || rows < total}
 }

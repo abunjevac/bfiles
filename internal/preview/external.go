@@ -19,6 +19,10 @@ import (
 // externalTimeout bounds how long a previewer may run.
 const externalTimeout = 5 * time.Second
 
+// externalWaitDelay bounds the wait for output pipes after the previewer exits or
+// is killed.
+const externalWaitDelay = time.Second
+
 // maxExternalOutput bounds how much previewer output is kept.
 const maxExternalOutput = 2 << 20
 
@@ -50,6 +54,9 @@ func external(ctx context.Context, req Request) (Result, bool) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // user-configured previewer
+
+	// a child that inherits stdout would otherwise keep Run waiting past the timeout
+	cmd.WaitDelay = externalWaitDelay
 
 	cmd.Env = append(os.Environ(), "COLUMNS="+strconv.Itoa(req.Width), "LINES="+strconv.Itoa(req.Height))
 

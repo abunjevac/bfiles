@@ -1,0 +1,117 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to use for the release (e.g. v1.2.3)'
+        required: true
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install upx
+        run: |
+          sudo apt update
+          sudo apt install -y upx
+
+      # the code is pure Go, so cross-compiling needs no toolchain for the target
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X github.com/abunjevac/bfiles/internal/version.Version=${{ env.RELEASE_TAG }}" \
+            -o bfiles \
+            ./cmd/bfiles
+          upx -6 -q bfiles
+          mv bfiles "bfiles-linux-${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bfiles-linux-${{ matrix.arch }}
+          path: bfiles-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-26.04
+
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum bfiles-linux-* > checksums.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ env.RELEASE_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --title "bfiles ${{ env.RELEASE_TAG }}" \
+            --generate-notes \
+            dist/*
+
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          releases=$(gh release list --repo "${{ github.repository }}" --limit 100 --json tagName --jq '.[].tagName')
+          count=$(echo "$releases" | grep -c .)
+          if [ "$count" -le 3 ]; then
+            echo "Only $count release(s); nothing to prune."
+            exit 0
+          fi
+          echo "$releases" | tail -n +4 | while IFS= read -r tag; do
+            echo "Deleting release $tag"
+            gh release delete "$tag" --repo "${{ github.repository }}" --yes --cleanup-tag
+          done
+
+      - name: Prune old workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow=build.yml --repo "${{ github.repository }}" --limit 100 --json databaseId --jq '.[].databaseId')
+          count=$(echo "$runs" | grep -c .)
+          if [ "$count" -le 3 ]; then
+            echo "Only $count run(s); nothing to prune."
+            exit 0
+          fi
+          echo "$runs" | tail -n +4 | while IFS= read -r id; do
+            echo "Deleting run $id"
+            gh run delete "$id" --repo "${{ github.repository }}"
+          done

@@ -16,11 +16,14 @@ type History struct {
 	Entries []HistoryEntry `toml:"entry"`
 }
 
-// HistoryEntry is one remembered connection target ("user@host:port/path").
+// HistoryEntry is one remembered connection target, as a location string.
 type HistoryEntry struct {
 	Target string    `toml:"target"`
 	Last   time.Time `toml:"last"`
 }
+
+// historyMode keeps the list of hosts and users private to the owner.
+const historyMode = 0o600
 
 // HistoryPath returns the history file in dir.
 func HistoryPath(dir string) string {
@@ -55,7 +58,7 @@ func SaveHistory(dir string, h *History) error {
 		return fmt.Errorf("encode-history: %w", err)
 	}
 
-	return writeFileAtomic(HistoryPath(dir), buf.Bytes())
+	return writeFileAtomic(HistoryPath(dir), buf.Bytes(), historyMode)
 }
 
 // Touch moves target to the front (adding it if new) and trims to limit entries.

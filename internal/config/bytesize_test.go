@@ -56,3 +56,26 @@ func TestByteSizeInConfig(t *testing.T) {
 	_, err = config.Parse("[preview]\nmax_bytes = \"lots\"\n")
 	require.Error(t, err)
 }
+
+func TestParseByteSizeEdges(t *testing.T) {
+	t.Parallel()
+
+	for _, bad := range []string{"8388608T", "9223372036854775807K", "9223372036854775808", "1I", "1iB", "1.5", "0.0001K", "1e3", "1..5K"} {
+		_, err := config.ParseByteSize(bad)
+		require.Error(t, err, bad)
+	}
+
+	tests := map[string]config.ByteSize{
+		"9223372036854775807": 9223372036854775807,
+		"8388607T":            8388607 << 40,
+		"2.0":                 2,
+		"1.1K":                1126,
+		"0.0K":                0,
+	}
+
+	for in, want := range tests {
+		got, err := config.ParseByteSize(in)
+		require.NoError(t, err, in)
+		require.Equal(t, want, got, in)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -43,7 +44,7 @@ func UpdateFile(path string, changes []Change) error {
 		return fmt.Errorf("refusing to save an invalid config: %w", err)
 	}
 
-	return writeFileAtomic(path, []byte(out))
+	return writeFileAtomic(path, []byte(out), configMode)
 }
 
 func apply(lines []string, c Change) ([]string, error) {
@@ -83,13 +84,20 @@ func apply(lines []string, c Change) ([]string, error) {
 	}
 
 	// insert after the last setting of the section, before trailing blank lines
+	// and the comment block that introduces the next header
 	at := end
 
-	for at > start && strings.TrimSpace(lines[at-1]) == "" {
+	for at > start && isBlankOrComment(lines[at-1]) {
 		at--
 	}
 
 	return splice(lines, at, at, newLine), nil
+}
+
+func isBlankOrComment(l string) bool {
+	t := strings.TrimSpace(l)
+
+	return t == "" || strings.HasPrefix(t, "#")
 }
 
 // settingLine renders the "key = value" line for a change; it is empty when
@@ -115,9 +123,16 @@ func settingLine(key string, c Change) (string, error) {
 // findKey returns the line within [start, end) that sets key.
 func findKey(lines []string, start, end int, key string) (int, bool) {
 	for i := start; i < end; i++ {
-		if k, ok := lineKey(lines[i]); ok && k == key {
+		k, _, ok := lineKey(lines[i])
+		if !ok {
+			continue
+		}
+
+		if k == key {
 			return i, true
 		}
+
+		i = valueEnd(lines, i)
 	}
 
 	return 0, false
@@ -144,7 +159,8 @@ func encodeValue(v any) (string, error) {
 }
 
 // sectionBounds returns the line range [start, end) of a table's body; table ""
-// is the top level before the first header.
+// is the top level before the first header. Value continuation lines are skipped,
+// so a nested array or multi-line string is never taken for a header.
 func sectionBounds(lines []string, table string) (int, int, bool) {
 	start := -1
 
@@ -152,10 +168,15 @@ func sectionBounds(lines []string, table string) (int, int, bool) {
 		start = 0
 	}
 
-	for i, l := range lines {
-		t := strings.TrimSpace(l)
+	for i := 0; i < len(lines); i++ {
+		if _, _, ok := lineKey(lines[i]); ok {
+			i = valueEnd(lines, i)
 
-		if !strings.HasPrefix(t, "[") {
+			continue
+		}
+
+		name, isHeader := headerName(lines[i])
+		if !isHeader {
 			continue
 		}
 
@@ -163,7 +184,7 @@ func sectionBounds(lines []string, table string) (int, int, bool) {
 			return start, i, true
 		}
 
-		if t == "["+table+"]" {
+		if name == table {
 			start = i + 1
 		}
 	}
@@ -175,43 +196,113 @@ func sectionBounds(lines []string, table string) (int, int, bool) {
 	return 0, 0, false
 }
 
-// lineKey extracts the key of a "key = value" line.
-func lineKey(l string) (string, bool) {
+// headerName returns the name of a "[table]" header line, tolerating spaces inside
+// the brackets, a quoted name and a trailing comment. Array-table headers ("[[x]]")
+// are headers too, but their name never matches a plain table.
+func headerName(l string) (string, bool) {
 	t := strings.TrimSpace(l)
 
-	if t == "" || strings.HasPrefix(t, "#") {
+	if !strings.HasPrefix(t, "[") {
 		return "", false
 	}
 
-	k, _, ok := strings.Cut(t, "=")
+	if strings.HasPrefix(t, "[[") {
+		return "[" + t, true
+	}
+
+	name, _, ok := strings.Cut(t[1:], "]")
 	if !ok {
 		return "", false
 	}
 
-	k = strings.TrimSpace(k)
+	name = strings.TrimSpace(name)
 
-	if len(k) >= 2 && (k[0] == '"' || k[0] == '\'') && k[len(k)-1] == k[0] {
-		k = k[1 : len(k)-1]
+	if k, n, ok := parseKey(name); ok && n == len(name) {
+		name = k
 	}
 
-	return k, true
+	return name, true
 }
 
-// valueEnd returns the last line of a value starting at line i, following
-// multi-line arrays until their brackets balance.
+// lineKey extracts the key of a "key = value" line and the index where the value
+// starts. Quoted keys are unescaped, so a key containing '=' or '\' is found.
+func lineKey(l string) (string, int, bool) {
+	t := strings.TrimLeft(l, " \t")
+
+	if t == "" || t[0] == '#' || t[0] == '[' {
+		return "", 0, false
+	}
+
+	k, n, ok := parseKey(t)
+	if !ok {
+		return "", 0, false
+	}
+
+	rest := strings.TrimLeft(t[n:], " \t")
+	if !strings.HasPrefix(rest, "=") {
+		return "", 0, false
+	}
+
+	return k, len(l) - len(rest) + 1, true
+}
+
+// parseKey reads a bare, basic-quoted or literal-quoted key at the start of s and
+// returns it with the number of bytes consumed.
+func parseKey(s string) (string, int, bool) {
+	if s == "" {
+		return "", 0, false
+	}
+
+	switch s[0] {
+	case '"':
+		end := closingQuote(s, 0)
+		if end >= len(s) {
+			return "", 0, false
+		}
+
+		k, err := strconv.Unquote(s[:end+1])
+		if err != nil {
+			return "", 0, false
+		}
+
+		return k, end + 1, true
+	case '\'':
+		end := strings.IndexByte(s[1:], '\'')
+		if end < 0 {
+			return "", 0, false
+		}
+
+		return s[1 : end+1], end + 2, true
+	}
+
+	n := strings.IndexAny(s, " \t=")
+	if n < 0 {
+		n = len(s)
+	}
+
+	return s[:n], n, n > 0
+}
+
+// valueEnd returns the last line of a value whose key is on line i, following
+// multi-line arrays and multi-line strings until they close.
 func valueEnd(lines []string, i int) int {
-	depth := 0
+	_, at, ok := lineKey(lines[i])
+	if !ok {
+		return i
+	}
+
+	var v valueScan
 
 	for j := i; j < len(lines); j++ {
 		l := lines[j]
 
 		if j == i {
-			_, l, _ = strings.Cut(l, "=")
+			l = l[at:]
 		}
 
-		depth += bracketDelta(l)
+		v.scan(l)
 
-		if depth <= 0 {
+		if v.depth <= 0 && v.multi == 0 {
 			return j
 		}
 	}
@@ -219,24 +310,62 @@ func valueEnd(lines []string, i int) int {
 	return len(lines) - 1
 }
 
-// bracketDelta counts [ minus ] outside strings and comments.
-func bracketDelta(s string) int {
-	d := 0
+// valueScan tracks bracket depth and an open multi-line string across lines.
+type valueScan struct {
+	depth int
+	// multi is the quote character of an open """ or ''' string, or 0.
+	multi byte
+}
 
+// scan updates the state with one line, ignoring brackets in strings and comments.
+func (v *valueScan) scan(s string) {
 	for i := 0; i < len(s); i++ {
+		if v.multi != 0 {
+			i = v.scanMulti(s, i)
+
+			continue
+		}
+
 		switch s[i] {
 		case '"', '\'':
+			if strings.HasPrefix(s[i:], strings.Repeat(s[i:i+1], 3)) {
+				v.multi = s[i]
+				i += 2
+
+				continue
+			}
+
 			i = closingQuote(s, i)
 		case '#':
-			return d
+			return
 		case '[':
-			d++
+			v.depth++
 		case ']':
-			d--
+			v.depth--
 		}
 	}
+}
 
-	return d
+// scanMulti handles s[i] inside a multi-line string and returns the index of the
+// last byte it consumed.
+func (v *valueScan) scanMulti(s string, i int) int {
+	if s[i] == '\\' && v.multi == '"' {
+		return i + 1
+	}
+
+	if !strings.HasPrefix(s[i:], strings.Repeat(string(v.multi), 3)) {
+		return i
+	}
+
+	// up to two extra quotes may close the string as part of its content
+	end := i + 3
+	for end < len(s) && end < i+5 && s[end] == v.multi {
+		end++
+	}
+
+	v.multi = 0
+
+	return end - 1
 }
 
 // closingQuote returns the index of the quote closing the string opened at i,

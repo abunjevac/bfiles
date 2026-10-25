@@ -25,10 +25,56 @@ var byteUnits = map[string]int64{
 	"T": 1 << 40,
 }
 
-// ParseByteSize parses a size such as "1048576", "512K", "1.5 M" or "2GiB".
+// ParseByteSize parses a size such as "1048576", "512K", "1.5 M" or "2GiB". A
+// fractional value with a unit is rounded to the nearest byte; a fractional byte
+// count without a unit, or a non-zero value that rounds to zero, is rejected.
 func ParseByteSize(s string) (ByteSize, error) {
-	t := strings.ToUpper(strings.TrimSpace(s))
-	t = strings.TrimSuffix(strings.TrimSuffix(t, "B"), "I")
+	invalid := fmt.Errorf("invalid size %q (use e.g. 512K, 1M, 2G)", s)
+
+	num, mult, ok := splitSize(s)
+	if !ok {
+		return 0, invalid
+	}
+
+	if !strings.Contains(num, ".") {
+		n, err := strconv.ParseInt(num, 10, 64)
+		if err != nil || n > math.MaxInt64/mult {
+			return 0, invalid
+		}
+
+		return ByteSize(n * mult), nil
+	}
+
+	n, ok := roundBytes(num, mult)
+	if !ok {
+		return 0, invalid
+	}
+
+	return n, nil
+}
+
+// roundBytes converts a fractional number of units to whole bytes.
+func roundBytes(num string, mult int64) (ByteSize, bool) {
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0, false
+	}
+
+	// float64(MaxInt64) is 2^63, so >= is what keeps the conversion in range
+	n := math.Round(v * float64(mult))
+	if n >= math.MaxInt64 || (mult == 1 && n != v) || (n == 0 && v != 0) {
+		return 0, false
+	}
+
+	return ByteSize(n), true
+}
+
+// splitSize separates the number from its unit multiplier. "i" is only valid as
+// part of a unit ("KiB"), never on its own.
+func splitSize(s string) (string, int64, bool) {
+	t := strings.TrimSuffix(strings.ToUpper(strings.TrimSpace(s)), "B")
+	binary := strings.HasSuffix(t, "I")
+	t = strings.TrimSuffix(t, "I")
 
 	i := strings.IndexFunc(t, func(r rune) bool { return (r < '0' || r > '9') && r != '.' })
 
@@ -38,16 +84,11 @@ func ParseByteSize(s string) (ByteSize, error) {
 	}
 
 	mult, ok := byteUnits[unit]
-	if !ok || num == "" {
-		return 0, fmt.Errorf("invalid size %q (use e.g. 512K, 1M, 2G)", s)
+	if !ok || num == "" || (binary && unit == "") {
+		return "", 0, false
 	}
 
-	v, err := strconv.ParseFloat(num, 64)
-	if err != nil || v < 0 || v*float64(mult) > math.MaxInt64 {
-		return 0, fmt.Errorf("invalid size %q (use e.g. 512K, 1M, 2G)", s)
-	}
-
-	return ByteSize(v * float64(mult)), nil
+	return num, mult, true
 }
 
 // String renders the size with the largest unit that divides it exactly.

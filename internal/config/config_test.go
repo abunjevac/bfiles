@@ -85,7 +85,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg, err := config.Parse("")
 	require.NoError(t, err)
 
-	cfg.Theme = "nord"
+	cfg.Theme = nordTheme
 	cfg.Bookmarks["work"] = "/srv/work"
 
 	require.NoError(t, config.Save(path, cfg))
@@ -134,7 +134,7 @@ func TestScaffoldKeepsExistingFiles(t *testing.T) {
 	b, err := config.Load(dir)
 	require.NoError(t, err)
 
-	require.Equal(t, "nord", b.Config.Theme)
+	require.Equal(t, nordTheme, b.Config.Theme)
 
 	km, err := b.LoadKeymap()
 	require.NoError(t, err)

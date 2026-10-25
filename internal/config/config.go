@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"cmp"
 	_ "embed"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,6 +15,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 )
+
+// configMode is the mode of new config files, which are user-readable by design.
+const configMode = 0o644
 
 // Icon styles.
 const (
@@ -253,7 +258,7 @@ func Save(path string, cfg *Config) error {
 		return fmt.Errorf("encode-config: %w", err)
 	}
 
-	return writeFileAtomic(path, buf.Bytes())
+	return writeFileAtomic(path, buf.Bytes(), configMode)
 }
 
 // ResolveDir returns the config dir, honoring an explicit override or ~/.config/bfiles.
@@ -284,18 +289,53 @@ func Load(dir string) (*Bundle, error) {
 	return &Bundle{Config: cfg, Dir: dir}, nil
 }
 
-func writeFileAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
+// writeFileAtomic replaces path through a temp file in the same directory, so a crash
+// never truncates it. A symlinked path is resolved so the link itself survives (e.g.
+// dotfile setups), and an existing file keeps its mode; mode applies to new files.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	target, err := filepath.EvalSymlinks(path)
 
-	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // config files are user-readable by design
+	switch {
+	case err == nil:
+		path = target
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("resolve %s: %w", filepath.Base(path), err)
+	}
+
+	if fi, statErr := os.Stat(path); statErr == nil {
+		mode = fi.Mode().Perm()
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
 	}
 
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := writeTemp(tmp, data, mode); err != nil {
+		_ = os.Remove(tmp.Name())
+
+		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+	}
+
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
 
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
 	}
 
 	return nil
+}
+
+// writeTemp fills and closes a temp file created by os.CreateTemp (always 0600).
+func writeTemp(f *os.File, data []byte, mode os.FileMode) error {
+	_, err := f.Write(data)
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+
+	return err
 }

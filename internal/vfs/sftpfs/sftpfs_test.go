@@ -2,7 +2,9 @@ package sftpfs_test
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -34,6 +37,13 @@ func startServer(t *testing.T) int {
 	signer, err := ssh.NewSignerFromKey(priv)
 	require.NoError(t, err)
 
+	return startServerWithKeys(t, signer)
+}
+
+// startServerWithKeys is startServer with the given host keys.
+func startServerWithKeys(t *testing.T, hostKeys ...ssh.Signer) int {
+	t.Helper()
+
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
 			if c.User() == "test" && string(pass) == testPassword {
@@ -43,7 +53,9 @@ func startServer(t *testing.T) int {
 			return nil, errors.New("denied")
 		},
 	}
-	cfg.AddHostKey(signer)
+	for _, k := range hostKeys {
+		cfg.AddHostKey(k)
+	}
 
 	var lc net.ListenConfig
 
@@ -248,4 +260,112 @@ func TestPoolSharesConnections(t *testing.T) {
 
 	_, err = b.Stat(ctx, "/")
 	require.Error(t, err, "connection must close after last release")
+}
+
+func TestKnownHostOfOtherKeyType(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	_, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	edSigner, err := ssh.NewSignerFromKey(edPriv)
+	require.NoError(t, err)
+
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	ecSigner, err := ssh.NewSignerFromKey(ecPriv)
+	require.NoError(t, err)
+
+	// the client prefers ecdsa by default, but only the ed25519 key is known
+	port := startServerWithKeys(t, ecSigner, edSigner)
+	opts := options(t)
+	line := "[127.0.0.1]:" + strconv.Itoa(port) + " " + string(ssh.MarshalAuthorizedKey(edSigner.PublicKey()))
+
+	require.NoError(t, os.WriteFile(opts.KnownHosts, []byte(line), 0o600))
+
+	p := &prompter{password: testPassword, trust: true}
+
+	f, err := sftpfs.Dial(ctx, target(port), p, opts)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	require.Zero(t, p.asked.Load())
+}
+
+func dial(t *testing.T) *sftpfs.FS {
+	t.Helper()
+
+	port := startServer(t)
+
+	f, err := sftpfs.Dial(context.Background(), target(port), &prompter{password: testPassword, trust: true}, options(t))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = f.Close() })
+
+	return f
+}
+
+func TestRenameReplace(t *testing.T) {
+	t.Parallel()
+
+	f := dial(t)
+	dir := t.TempDir()
+	from := filepath.Join(dir, "from")
+	to := filepath.Join(dir, "to")
+
+	require.NoError(t, os.WriteFile(to, []byte("old"), 0o600))
+
+	// a missing source must leave the target alone
+	require.Error(t, f.RenameReplace(from, to))
+
+	data, err := os.ReadFile(to)
+	require.NoError(t, err)
+	require.Equal(t, "old", string(data))
+
+	require.NoError(t, os.WriteFile(from, []byte("new"), 0o600))
+	require.NoError(t, f.RenameReplace(from, to))
+
+	data, err = os.ReadFile(to)
+	require.NoError(t, err)
+	require.Equal(t, "new", string(data))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no aside copy may remain")
+}
+
+func TestConcurrentClose(t *testing.T) {
+	t.Parallel()
+
+	f := dial(t)
+
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Go(func() { _ = f.Close() })
+	}
+
+	wg.Wait()
+}
+
+func TestIdentifier(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	f := dial(t)
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "x", "d"), 0o755))
+	require.NoError(t, os.Symlink("x", filepath.Join(dir, "y")))
+
+	got, err := f.RealPath(ctx, filepath.Join(dir, "y", "d", "missing"))
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dir, "x", "d", "missing"), got)
+
+	require.True(t, f.SameFile(ctx, filepath.Join(dir, "y", "d"), filepath.Join(dir, "x", "d")))
+	require.False(t, f.SameFile(ctx, filepath.Join(dir, "y"), filepath.Join(dir, "x", "d")))
 }

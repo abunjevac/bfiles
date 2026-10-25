@@ -2,11 +2,14 @@ package sftpfs
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -164,7 +167,7 @@ func handshake(ctx context.Context, conn net.Conn, addr string, cfg *ssh.ClientC
 }
 
 func clientConfig(ctx context.Context, t sshcfg.Target, p Prompter, o Options) (*ssh.ClientConfig, func(), error) {
-	hostKey, err := hostKeyCallback(ctx, o.KnownHosts, p)
+	hostKey, check, err := hostKeyCallback(ctx, o.KnownHosts, p)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -194,7 +197,22 @@ func clientConfig(ctx context.Context, t sshcfg.Target, p Prompter, o Options) (
 		return loadSigners(ctx, keys, p), nil
 	}))
 
-	methods = append(methods,
+	methods = append(methods, promptMethods(ctx, t, p)...)
+
+	cfg := &ssh.ClientConfig{
+		User:              t.User,
+		Auth:              methods,
+		HostKeyCallback:   hostKey,
+		HostKeyAlgorithms: knownAlgorithms(check, t.Addr()),
+		Timeout:           o.Timeout,
+	}
+
+	return cfg, closeAgent, nil
+}
+
+// promptMethods authenticates with answers from the user.
+func promptMethods(ctx context.Context, t sshcfg.Target, p Prompter) []ssh.AuthMethod {
+	return []ssh.AuthMethod{
 		ssh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 
@@ -214,16 +232,7 @@ func clientConfig(ctx context.Context, t sshcfg.Target, p Prompter, o Options) (
 		ssh.PasswordCallback(func() (string, error) {
 			return p.Secret(ctx, fmt.Sprintf("Password for %s@%s", t.User, t.Host))
 		}),
-	)
-
-	cfg := &ssh.ClientConfig{
-		User:            t.User,
-		Auth:            methods,
-		HostKeyCallback: hostKey,
-		Timeout:         o.Timeout,
 	}
-
-	return cfg, closeAgent, nil
 }
 
 // loadSigners reads private keys, asking for passphrases of encrypted ones.
@@ -255,25 +264,74 @@ func loadSigners(ctx context.Context, files []string, p Prompter) []ssh.Signer {
 	return signers
 }
 
+// knownAlgorithms returns the host key algorithms for the key types known_hosts has
+// for addr, so the server is asked for a key that can be verified rather than one of
+// another type, which would look like a changed key. It returns nil (the defaults)
+// for an unknown host.
+func knownAlgorithms(check ssh.HostKeyCallback, addr string) []string {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil
+	}
+
+	probe, err := ssh.NewPublicKey(priv.Public())
+	if err != nil {
+		return nil
+	}
+
+	// the probe key is fresh, so the check fails and lists the known keys
+	keyErr, ok := errors.AsType[*knownhosts.KeyError](check(addr, &net.TCPAddr{IP: net.IPv4zero}, probe))
+	if !ok {
+		return nil
+	}
+
+	var algos []string
+
+	for _, k := range keyErr.Want {
+		for _, a := range algorithmsFor(k.Key.Type()) {
+			if !slices.Contains(algos, a) {
+				algos = append(algos, a)
+			}
+		}
+	}
+
+	return algos
+}
+
+// algorithmsFor maps a key type to the signature algorithms that verify it.
+func algorithmsFor(keyType string) []string {
+	if keyType == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	}
+
+	return []string{keyType}
+}
+
 // hostKeyCallback verifies against known_hosts, asking the user about unknown hosts
-// and remembering accepted keys. A changed key is always refused.
-func hostKeyCallback(ctx context.Context, path string, p Prompter) (ssh.HostKeyCallback, error) {
+// and remembering accepted keys. A changed key is always refused. The raw
+// known_hosts check is returned too, for choosing host key algorithms.
+func hostKeyCallback(ctx context.Context, path string, p Prompter) (ssh.HostKeyCallback, ssh.HostKeyCallback, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("known-hosts: %w", err)
+		return nil, nil, fmt.Errorf("known-hosts: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("known-hosts: %w", err)
+		return nil, nil, fmt.Errorf("known-hosts: %w", err)
 	}
 
 	_ = f.Close()
 
 	check, err := knownhosts.New(path)
 	if err != nil {
-		return nil, fmt.Errorf("known-hosts: %w", err)
+		return nil, nil, fmt.Errorf("known-hosts: %w", err)
 	}
 
+	return verifyHostKey(ctx, path, p, check), check, nil
+}
+
+// verifyHostKey wraps the known_hosts check with the user's decisions.
+func verifyHostKey(ctx context.Context, path string, p Prompter, check ssh.HostKeyCallback) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := check(hostname, remote, key)
 		if err == nil {
@@ -287,7 +345,7 @@ func hostKeyCallback(ctx context.Context, path string, p Prompter) (ssh.HostKeyC
 		}
 
 		if len(keyErr.Want) > 0 {
-			return ErrHostKeyChanged
+			return knownKeyMismatch(hostname, key, keyErr.Want)
 		}
 
 		question := fmt.Sprintf("Unknown host %s\n%s key fingerprint %s\nTrust and remember it?",
@@ -303,7 +361,24 @@ func hostKeyCallback(ctx context.Context, path string, p Prompter) (ssh.HostKeyC
 		}
 
 		return appendKnownHost(path, hostname, remote, key)
-	}, nil
+	}
+}
+
+// knownKeyMismatch explains why a key of a known host was refused: a different key
+// of a known type has changed, while a key of another type cannot be verified.
+func knownKeyMismatch(hostname string, key ssh.PublicKey, want []knownhosts.KnownKey) error {
+	types := make([]string, 0, len(want))
+
+	for _, k := range want {
+		if k.Key.Type() == key.Type() {
+			return ErrHostKeyChanged
+		}
+
+		types = append(types, k.Key.Type())
+	}
+
+	return fmt.Errorf("host %s offered a %s key, but known_hosts only has %s keys for it",
+		hostname, key.Type(), strings.Join(types, ", "))
 }
 
 func appendKnownHost(path, hostname string, remote net.Addr, key ssh.PublicKey) error {

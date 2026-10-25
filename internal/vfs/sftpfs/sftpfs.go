@@ -2,12 +2,15 @@ package sftpfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -24,9 +27,18 @@ type FS struct {
 	client *sftp.Client
 	home   string
 	done   chan struct{}
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
-var _ vfs.FS = (*FS)(nil)
+// maxLinkDepth bounds symlink resolution so a link loop cannot recurse forever.
+const maxLinkDepth = 40
+
+var (
+	_ vfs.FS         = (*FS)(nil)
+	_ vfs.Identifier = (*FS)(nil)
+)
 
 // Dial connects to t and starts an SFTP session.
 func Dial(ctx context.Context, t sshcfg.Target, p Prompter, o Options) (*FS, error) {
@@ -89,16 +101,15 @@ func (*FS) Caps() vfs.Caps { return vfs.Caps{Write: true, Rename: true, Symlink:
 
 // Close implements vfs.FS.
 func (f *FS) Close() error {
-	select {
-	case <-f.done:
-		return nil
-	default:
+	f.closeOnce.Do(func() {
 		close(f.done)
-	}
 
-	_ = f.client.Close()
+		_ = f.client.Close()
 
-	return f.ssh.Close()
+		f.closeErr = f.ssh.Close()
+	})
+
+	return f.closeErr
 }
 
 // ReadDir implements vfs.FS. Symlinks are stat'ed individually to resolve IsDir.
@@ -170,18 +181,7 @@ func (f *FS) Rename(_ context.Context, from, to string) error {
 		return f.client.PosixRename(from, to)
 	}
 
-	if err := f.client.Rename(from, to); err == nil {
-		return nil
-	}
-
-	// plain SFTP rename refuses to overwrite; emulate replace for files
-	if fi, err := f.client.Lstat(to); err == nil && !fi.IsDir() {
-		if err := f.client.Remove(to); err != nil {
-			return err
-		}
-	}
-
-	return f.client.Rename(from, to)
+	return f.renameReplace(from, to)
 }
 
 // Chtimes implements vfs.FS.
@@ -197,6 +197,33 @@ func (f *FS) Chmod(_ context.Context, p string, mode fs.FileMode) error {
 // Symlink implements vfs.FS.
 func (f *FS) Symlink(_ context.Context, target, p string) error {
 	return f.client.Symlink(target, p)
+}
+
+// RealPath implements vfs.Identifier. Links are resolved on the client, because
+// not every SFTP server resolves them in its realpath reply.
+func (f *FS) RealPath(_ context.Context, p string) (string, error) {
+	return f.resolve(p, 0)
+}
+
+// SameFile implements vfs.Identifier by comparing resolved paths; SFTP exposes no
+// inode numbers, so bind mounts and hard links are not detected.
+func (f *FS) SameFile(ctx context.Context, a, b string) bool {
+	if _, err := f.client.Stat(a); err != nil {
+		return false
+	}
+
+	if _, err := f.client.Stat(b); err != nil {
+		return false
+	}
+
+	ra, err := f.RealPath(ctx, a)
+	if err != nil {
+		return false
+	}
+
+	rb, err := f.RealPath(ctx, b)
+
+	return err == nil && ra == rb
 }
 
 // Readlink returns the target of the symlink at p.
@@ -258,4 +285,89 @@ func (f *FS) entry(p string, fi fs.FileInfo) vfs.Entry {
 	}
 
 	return e
+}
+
+// renameReplace emulates a replacing rename with plain SFTP renames, which refuse
+// to overwrite. An existing file target is moved aside first and restored if the
+// rename still fails, so the target is never lost.
+func (f *FS) renameReplace(from, to string) error {
+	if _, err := f.client.Lstat(from); err != nil {
+		return err
+	}
+
+	err := f.client.Rename(from, to)
+	if err == nil {
+		return nil
+	}
+
+	fi, statErr := f.client.Lstat(to)
+	if statErr != nil || fi.IsDir() {
+		return err
+	}
+
+	aside := path.Join(path.Dir(to), "."+path.Base(to)+".bfiles-old-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+
+	if err := f.client.Rename(to, aside); err != nil {
+		return err
+	}
+
+	if err := f.client.Rename(from, to); err != nil {
+		if rerr := f.client.Rename(aside, to); rerr != nil {
+			return fmt.Errorf("rename %s: %w (previous target kept as %s)", to, err, aside)
+		}
+
+		return err
+	}
+
+	return f.client.Remove(aside)
+}
+
+// resolve follows symlinks component by component; the part below the first
+// missing component is appended unchanged.
+func (f *FS) resolve(p string, depth int) (string, error) {
+	if depth > maxLinkDepth {
+		return "", fmt.Errorf("%s: too many levels of symbolic links", p)
+	}
+
+	parts := strings.Split(strings.Trim(path.Clean("/"+p), "/"), "/")
+	cur := "/"
+
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		next := path.Join(cur, part)
+
+		fi, err := f.client.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			return path.Join(append([]string{next}, parts[i+1:]...)...), nil
+		}
+
+		if err != nil {
+			return "", err
+		}
+
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			cur = next
+
+			continue
+		}
+
+		target, err := f.client.ReadLink(next)
+		if err != nil {
+			return "", err
+		}
+
+		if !path.IsAbs(target) {
+			target = path.Join(cur, target)
+		}
+
+		cur, err = f.resolve(target, depth+1)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return cur, nil
 }
